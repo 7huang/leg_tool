@@ -140,13 +140,13 @@ python3 scripts/analyze_ticks.py build/pace_log/<运行目录>
 - 只支持串联关节。同肢体的并联关节(踝 4/5/10/11、腰 13/14)不发送指令, 处于无力状态, PACE 仿真中要设为零刚度。
 
 ## 步骤
-1. 从策略 ONNX 导出增益(需要 onnxruntime 或 onnx):
+1. 增益文件: 采集与重新训练统一使用 gains_yaoguwu_plus_122500i.txt(从 dance_medium1 所用策略导出, 与当前走路策略、greetings 等 29 关节策略的增益相同)。换策略时重新导出(有 onnxruntime / onnx 时优先使用, 没有也能直接解析):
 ```
-python3 scripts/export_gains.py <policy.onnx> -o gains.txt
+python3 scripts/export_gains.py <policy.onnx> -o gains_<名称>.txt
 ```
 2. dry-run 检查参数, 例如激励整条右腿的 4 个串联关节, 膝关节中心设在 0.4 rad:
 ```
-sudo ./pace_chirp --gains ../gains.txt --joints 6,7,8,9 --amps 0.1,0.05,0.05,0.1 --centers q0,q0,q0,0.4 --f1 5 --duration 30 --dry-run
+sudo ./pace_chirp --gains ../gains_yaoguwu_plus_122500i.txt --joints 6,7,8,9 --amps 0.1,0.05,0.05,0.1 --centers q0,q0,q0,0.4 --f1 5 --duration 30 --dry-run
 ```
 3. 吊装后真机运行: 同样的命令, 把 --dry-run 换成 --confirm-suspended。
 4. 检查数据:

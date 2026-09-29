@@ -26,13 +26,60 @@ JOINT_XML = [
 ]
 
 
+def read_varint(buf, pos):
+    result, shift = 0, 0
+    while True:
+        b = buf[pos]
+        pos += 1
+        result |= (b & 0x7F) << shift
+        if not b & 0x80:
+            return result, pos
+        shift += 7
+
+
+def parse_fields(buf):
+    """逐个产出 protobuf 消息的 (字段号, 线类型, 值); 长度定界字段的值为 bytes"""
+    pos = 0
+    while pos < len(buf):
+        key, pos = read_varint(buf, pos)
+        field, wire = key >> 3, key & 7
+        if wire == 0:
+            value, pos = read_varint(buf, pos)
+        elif wire == 1:
+            value, pos = buf[pos:pos + 8], pos + 8
+        elif wire == 2:
+            length, pos = read_varint(buf, pos)
+            value, pos = buf[pos:pos + length], pos + length
+        elif wire == 5:
+            value, pos = buf[pos:pos + 4], pos + 4
+        else:
+            raise ValueError(f"不支持的 protobuf 线类型 {wire}")
+        yield field, wire, value
+
+
+def read_metadata_raw(path):
+    """不依赖 onnx 库: ModelProto 的 metadata_props 是字段 14, 每项 StringStringEntryProto 的 key=1, value=2"""
+    with open(path, "rb") as f:
+        buf = f.read()
+    meta = {}
+    for field, wire, value in parse_fields(buf):
+        if field == 14 and wire == 2:
+            entry = {k: v.decode("utf-8") for k, w, v in parse_fields(value) if w == 2}
+            meta[entry.get(1, "")] = entry.get(2, "")
+    return meta
+
+
 def read_metadata(path):
     try:
         import onnxruntime
         return onnxruntime.InferenceSession(path).get_modelmeta().custom_metadata_map
     except ImportError:
+        pass
+    try:
         import onnx
         return {p.key: p.value for p in onnx.load(path).metadata_props}
+    except ImportError:
+        return read_metadata_raw(path)
 
 
 def main():
@@ -52,10 +99,14 @@ def main():
         sys.exit("joint_names / joint_stiffness / joint_damping 长度不一致")
     missing = [n for n in JOINT_XML if n not in names]
     if missing:
-        sys.exit(f"策略中缺少关节: {missing}")
+        # 策略不含的关节写成注释; pace_chirp 只有在用到这些关节时才会报缺少增益
+        print(f"注意: 策略中没有这些关节, 已写成注释: {', '.join(missing)}", file=sys.stderr)
 
     lines = [f"# source: {args.onnx}", "# index name kp kd"]
     for i, name in enumerate(JOINT_XML):
+        if name in missing:
+            lines.append(f"# {i} {name} (策略中无此关节)")
+            continue
         j = names.index(name)
         lines.append(f"{i} {name} {kp[j]:g} {kd[j]:g}")
     text = "\n".join(lines) + "\n"
