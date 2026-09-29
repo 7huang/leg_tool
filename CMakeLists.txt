@@ -60,3 +60,7 @@ target_link_libraries(leg_tool
 add_executable(pace_single_joint src/pace_single_joint.cpp)
 target_link_libraries(pace_single_joint encos_motor Threads::Threads)
 
+## PACE 采集: 多关节同时 chirp 激励, 同肢体其余串联关节 PD 保持, URDF 坐标输出
+add_executable(pace_chirp src/pace_chirp.cpp)
+target_link_libraries(pace_chirp encos_motor Threads::Threads)
+

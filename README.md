@@ -119,7 +119,7 @@ python3 scripts/analyze_ticks.py build/pace_log/<运行目录>
 - 控制循环抖动
 - chirp 段闭环频率响应, 以及惯量 I、粘滞阻尼 b、库伦摩擦 Fc、延迟 T 的粗估计(仅用于检查数据, 正式辨识交给 PACE)
 
-图片 analysis_time.png / analysis_timing.png / analysis_bode.png 保存在运行目录(可用 --out 指定)。
+图片 analysis_time_<下标>.png / analysis_timing_<下标>.png / analysis_bode_<下标>.png 保存在运行目录(可用 --out 指定)。pace_chirp 的数据默认只分析被激励关节, --joint 只看某一个, --all 同时看保持关节。
 
 ## 注意事项
 - 指令从 t_cmd_ns 到实际上总线约有 0-6 ms 延迟(1 kHz 打包线程 + 1 kHz 发送线程 + 每个电机每 4 ms 轮到一次), 这部分与部署链路一致, 交给 PACE 作为执行器延迟辨识。
@@ -128,5 +128,56 @@ python3 scripts/analyze_ticks.py build/pace_log/<运行目录>
 - 并联关节(踝 4/5/10/11、腰 13/14)的 PD 在 C 端做关节空间计算、解算与限幅, 本程序不支持。
 - 使用 sudo 运行, 输出文件属主为 root。
 
+# PACE 多关节采集(pace_chirp)
+正式采集用 pace_chirp, 生成的数据可直接转换为 pace-sim2real 的 chirp_data.pt。pace_single_joint 只用于验证时序。
+
+与 pace-sim2real 的 data_collection.py 一致: 多个关节同时激励, 共用同一条线性 chirp 相位, 每个关节有自己的振幅(可带符号)和中心位置。吊装时各肢体之间动力学不耦合, 默认用 PD 保持被激励关节所在肢体的其余串联关节, 其它肢体不发送报文。
+
+## 与 pace_single_joint 的区别
+- 输入输出都是 URDF(策略)坐标, 换算与部署链路一致: q_urdf = (q_api * motor_direction + pos_offset) * dance_dir, 不加 leg_offset(零偏交给 PACE 辨识)。motor_direction / dance_dir / pos_offset 抄自 deploy_real, 修改部署代码时要同步修改 src/pace_chirp.cpp。
+- kp/kd 从增益文件读取, 与策略一致。
+- 可以把被激励关节先移动到指定中心位置再做 chirp(例如让膝关节离开伸直限位)。
+- 只支持串联关节。同肢体的并联关节(踝 4/5/10/11、腰 13/14)不发送指令, 处于无力状态, PACE 仿真中要设为零刚度。
+
+## 步骤
+1. 从策略 ONNX 导出增益(需要 onnxruntime 或 onnx):
+```
+python3 scripts/export_gains.py <policy.onnx> -o gains.txt
+```
+2. dry-run 检查参数, 例如激励整条右腿的 4 个串联关节, 膝关节中心设在 0.4 rad:
+```
+sudo ./pace_chirp --gains ../gains.txt --joints 6,7,8,9 --amps 0.1,0.05,0.05,0.1 --centers q0,q0,q0,0.4 --f1 5 --duration 30 --dry-run
+```
+3. 吊装后真机运行: 同样的命令, 把 --dry-run 换成 --confirm-suspended。
+4. 检查数据:
+```
+python3 scripts/analyze_ticks.py build/pace_log/<运行目录>
+```
+5. 转换为 PACE 格式(--dt 为 PACE 仿真的 physics dt, --joint-order 与 PACE 环境的 sim2real.joint_order 一致):
+```
+python3 scripts/to_pace.py build/pace_log/<运行目录> --dt 0.005 --joint-order right_hip_pitch_joint,right_hip_roll_joint,right_hip_yaw_joint,right_knee_joint
+```
+输出 chirp_data.pt({"time", "dof_pos", "des_dof_pos"}, URDF 坐标)和 chirp_data_info.json(关节顺序、增益、初始位置、需要在仿真中复现的保持/无力关节)。
+
+## 主要参数
+| 参数 | 说明 | 默认值 |
+|---|---|---|
+| --gains | 增益文件, 每行 `下标 关节名 kp kd` | 必填 |
+| --joints | 被激励关节下标, 逗号分隔 | 必填 |
+| --amp / --amps | 统一振幅 / 逐关节振幅(可为负) [rad], 上限 0.3 | 0.05 |
+| --centers | 逐关节 chirp 中心 [rad, URDF], q0 表示当前位置 | 全部 q0 |
+| --hold | PD 保持的关节: limb / none / 下标列表 | limb |
+| --move-time | 在 q0 与中心位置之间移动的时长 [s] | 2.0 |
+| --max-move | 中心位置距 q0 的上限 [rad] | 0.5 |
+| --max-err | \|q - q_des\| 超过即中止 [rad], 至少 2 倍最大振幅 + 0.05 | 0.25 |
+| --max-tau | 力矩安全阈值 [Nm] | 30 |
+
+其余参数(--f0/--f1/--duration/--ramp/--hold-pre/--hold-post/--rate/--max-vel/--stale-ms/--out)与 pace_single_joint 相同, 完整说明见 `./pace_chirp --help`。
+
+运行阶段: probe -> engage -> move_in(移动到中心) -> hold_pre -> chirp -> hold_post -> move_out(回到 q0) -> release -> zero。中止条件与 pace_single_joint 相同, 另增加跟踪误差超限。
+
+ticks.csv 中每个参与关节 i 有一组列: q_des_i, kp_i, kd_i, q_i, qd_i, tau_i, temperature_i, error_i, rx_ns_i, rx_count_i, tx_ns_i, tx_count_i。
+
 #变更日志
 - 2026-09-28: 新增 pace_single_joint(PACE 单关节 chirp 采集); 底层库增加逐关节收发时间戳(encos/pace_stamp.*)。
+- 2026-09-29: 新增 pace_chirp(多关节 PACE 采集, URDF 坐标)、scripts/export_gains.py、scripts/to_pace.py; analyze_ticks.py 支持 pace_chirp 输出。
