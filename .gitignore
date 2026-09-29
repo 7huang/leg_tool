@@ -39,3 +39,5 @@ ticks.csv
 plan.csv
 meta.json
 analysis_*.png
+# scripts 下的采集数据
+scripts/data/
