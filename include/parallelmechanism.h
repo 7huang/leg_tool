@@ -91,6 +91,11 @@ public:
     std::tuple<double, double, double, double, double, double> 
     motorToJointW(double t1, double t2, double v1, double v2,
                       double tq1, double tq2);
+    // 踝正解, 与 motorToJointLeft(side=1)/motorToJointRight(side=2) 相同, 但迭代初值由调用者保存,
+    // 不读写全局 last_* 状态, 可在其它线程中使用独立实例调用
+    std::tuple<double, double, double, double, double, double> 
+    motorToJointAnkle(int side, double t1, double t2, double v1, double v2,
+                      double tq1, double tq2, double& last_pitch, double& last_roll);
 };
 
 #endif

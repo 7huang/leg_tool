@@ -131,13 +131,13 @@ python3 scripts/analyze_ticks.py build/pace_log/<运行目录>
 # PACE 多关节采集(pace_chirp)
 正式采集用 pace_chirp, 生成的数据可直接转换为 pace-sim2real 的 chirp_data.pt。pace_single_joint 只用于验证时序。
 
-与 pace-sim2real 的 data_collection.py 一致: 多个关节同时激励, 共用同一条线性 chirp 相位, 每个关节有自己的振幅(可带符号)和中心位置。吊装时各肢体之间动力学不耦合, 默认用 PD 保持被激励关节所在肢体的其余串联关节, 其它肢体不发送报文。
+与 pace-sim2real 的 data_collection.py 一致: 多个关节同时激励, 共用同一条线性 chirp 相位, 每个关节有自己的振幅(可带符号)和中心位置。吊装时各肢体之间动力学不耦合, 默认用 PD 保持被激励关节所在肢体的其余关节, 其它肢体不发送报文。支持整条腿(含并联踝)一起采集, 见下文「整条腿采集」。
 
 ## 与 pace_single_joint 的区别
 - 输入输出都是 URDF(策略)坐标, 换算与部署链路一致: q_urdf = (q_api * motor_direction + pos_offset) * dance_dir, 不加 leg_offset(零偏交给 PACE 辨识)。motor_direction / dance_dir / pos_offset 抄自 deploy_real, 修改部署代码时要同步修改 src/pace_chirp.cpp。
 - kp/kd 从增益文件读取, 与策略一致。
 - 可以把被激励关节先移动到指定中心位置再做 chirp(例如让膝关节离开伸直限位)。
-- 只支持串联关节。同肢体的并联关节(踝 4/5/10/11、腰 13/14)不发送指令, 处于无力状态, PACE 仿真中要设为零刚度。
+- 支持串联关节和并联踝(4/5/10/11), 踝与部署链路一样做关节空间 PD。并联腰(13/14)不支持, 不发送指令, 处于无力状态, PACE 仿真中要设为零刚度。
 
 ## 步骤
 1. 增益文件: 采集与重新训练统一使用 gains_yaoguwu_plus_122500i.txt(从 dance_medium1 所用策略导出, 与当前走路策略、greetings 等 29 关节策略的增益相同)。换策略时重新导出(有 onnxruntime / onnx 时优先使用, 没有也能直接解析):
@@ -170,15 +170,36 @@ python3 scripts/to_pace.py build/pace_log/<运行目录> --dt 0.005 --joint-orde
 | --move-time | 在 q0 与中心位置之间移动的时长 [s] | 2.0 |
 | --max-move | 中心位置距 q0 的上限 [rad] | 0.5 |
 | --max-err | \|q - q_des\| 超过即中止 [rad], 至少 2 倍最大振幅 + 0.05 | 0.25 |
-| --max-tau | 力矩安全阈值 [Nm] | 30 |
+| --max-tau | 力矩安全阈值 [Nm], 踝为解算后的关节力矩 | 30 |
+| --ankle-kd-ff | 踝电机侧附加阻尼 kd_ff[0](电机空间) | 0 |
 
 其余参数(--f0/--f1/--duration/--ramp/--hold-pre/--hold-post/--rate/--max-vel/--stale-ms/--out)与 pace_single_joint 相同, 完整说明见 `./pace_chirp --help`。
 
 运行阶段: probe -> engage -> move_in(移动到中心) -> hold_pre -> chirp -> hold_post -> move_out(回到 q0) -> release -> zero。中止条件与 pace_single_joint 相同, 另增加跟踪误差超限。
 
 ticks.csv 中每个参与关节 i 有一组列: q_des_i, kp_i, kd_i, q_i, qd_i, tau_i, temperature_i, error_i, rx_ns_i, rx_count_i, tx_ns_i, tx_count_i。
+有踝参与时另有踝电机原始回传列 motor_q_m, motor_qd_m, motor_tau_m, motor_rx_ns_m, motor_rx_count_m(m 为 4/5 或 10/11, get_motor_data 同坐标, 未做并联解算), 用于离线重新解算。
+
+## 整条腿采集
+一次激励一条腿的全部 6 个关节(髋 pitch/roll/yaw、膝、踝 pitch/roll), 例如右腿, 膝中心设在 0.4 rad:
+```
+sudo ./pace_chirp --gains ../gains_yaoguwu_plus_122500i.txt --joints 6,7,8,9,10,11 --amps 0.1,0.05,0.05,0.1,0.05,0.05 --centers q0,q0,q0,0.4,q0,q0 --f1 5 --duration 30 --dry-run
+```
+左腿为 `--joints 0,1,2,3,4,5`。确认无误后把 --dry-run 换成 --confirm-suspended。转换时关节顺序同样与 PACE 环境一致:
+```
+python3 scripts/to_pace.py build/pace_log/<运行目录> --dt 0.005 --joint-order right_hip_pitch_joint,right_hip_roll_joint,right_hip_yaw_joint,right_knee_joint,right_ankle_pitch_joint,right_ankle_roll_joint
+```
+
+踝(并联)的处理:
+- 指令: 与部署链路完全相同。下发关节空间 q_des/kp/kd, 底层 1 kHz 发送线程用并联解算后的关节状态算 PD 力矩(关节力矩限幅 pitch 60 / roll 20 Nm), 经雅可比换成两个电机的力矩(电机力矩限幅 25 Nm), 电机侧阻尼为 kd_ff[0](--ankle-kd-ff, 默认 0, 即只有关节 PD, 与仿真中的 PD 一致; 要与部署一致时填部署所用的值)。
+- 反馈: 程序用两个踝电机各自带时间戳的回传做正解, 得到 pitch/roll 的 q/qd/tau, 解算与 get_motor_data 相同。rx_ns 取两个电机中较新的一帧, rx_count 取较小者(两个电机都有新帧才算一帧新测量), 超时检查按较旧的一帧。
+- 同一只脚的 pitch/roll 共用两个电机, 必须一起参与: 只激励其中一个时, 另一个自动 PD 保持(--hold none 时也一样)。
+- --hold limb(默认)现在也会保持同肢体的踝, 例如只激励右膝时右踝 PD 保持, 不再无力。
+- 首次运行建议先只激励踝(如 `--joints 10,11 --amp 0.03 --f1 2`), 确认解算后的角度方向、跟踪正常, 再做整条腿。
+- 转换得到的 chirp_data_info.json 中 ankle 字段记录踝关节、kd_ff 与力矩限幅, 仿真中如需复现可参考。
 
 #变更日志
 - 2026-09-28: 新增 pace_single_joint(PACE 单关节 chirp 采集); 底层库增加逐关节收发时间戳(encos/pace_stamp.*)。
 - 2026-09-29: 新增 pace_chirp(多关节 PACE 采集, URDF 坐标)、scripts/export_gains.py、scripts/to_pace.py; analyze_ticks.py 支持 pace_chirp 输出。
 - 2026-09-29: 修复发送线程偶尔连续多轮漏发同一组电机的问题(实测单个电机最长约 50ms 收不到指令): 发送队列为空时重发不超过 3ms 的上一份指令快照(encos/transmit_fd.cpp)。此修改同样作用于部署用的 libkeenon_lf1.so。
+- 2026-09-29: pace_chirp 支持并联踝(4/5/10/11), 可整条腿一起采集; --hold limb 同时保持同肢体的踝; 新增 --ankle-kd-ff; ParallelMechanism 增加不依赖全局状态的 motorToJointAnkle(motorToJointLeft/Right 改为调用它, 结果不变)。

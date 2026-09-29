@@ -447,57 +447,46 @@ double last_pitch_w = 0;
 double last_roll_w = 0;
 
 std::tuple<double, double, double, double, double, double> 
-    ParallelMechanism::motorToJointLeft(double t1, double t2, double v1, double v2,
-                      double tq1, double tq2){
-        int side = 1;
-        double pitch_l = 0.0;
-        double roll_l = 0.0;
-        double pitch_l_v = 0.0;
-        double roll_l_v = 0.0;
-        double pitch_l_t = 0.0;
-        double roll_l_t = 0.0;
+    ParallelMechanism::motorToJointAnkle(int side, double t1, double t2, double v1, double v2,
+                      double tq1, double tq2, double& last_pitch, double& last_roll){
+        double pitch = 0.0;
+        double roll = 0.0;
+        double pitch_v = 0.0;
+        double roll_v = 0.0;
+        double pitch_t = 0.0;
+        double roll_t = 0.0;
         Eigen::Matrix2d J;
         Eigen::Matrix2d J_l2pr;
         Eigen::Vector2d L;
         int flag = 0;
-        t1 = t1+0.261;
-        t2 = t2+M_PI-0.261;
-        fk(t1, t2, last_pitch_l, last_roll_l, side, pitch_l, roll_l);
-        last_pitch_l = pitch_l;
-        last_roll_l = roll_l;
-        jac(t1, t2, pitch_l, roll_l, side, J, J_l2pr, L, flag);
-        // jac(0, 0, 0, 0, side, J, J_l2pr, L, flag);
-        // std::cout << "J = \n" << J << std::endl;
-        velocity_motor2pr(J, v1, v2, pitch_l_v, roll_l_v);
-        torque_motor2pr(J, tq1, tq2, pitch_l_t, roll_l_t);
+        if (side == 1){
+            t1 = t1+0.261;
+            t2 = t2+M_PI-0.261;
+        }
+        else{
+            t1 = t1+M_PI-0.261;
+            t2 = t2+0.261;
+        }
+        fk(t1, t2, last_pitch, last_roll, side, pitch, roll);
+        last_pitch = pitch;
+        last_roll = roll;
+        jac(t1, t2, pitch, roll, side, J, J_l2pr, L, flag);
+        velocity_motor2pr(J, v1, v2, pitch_v, roll_v);
+        torque_motor2pr(J, tq1, tq2, pitch_t, roll_t);
     
-        return std::make_tuple(roll_l, pitch_l, roll_l_v, pitch_l_v, roll_l_t, pitch_l_t); //urdf
+        return std::make_tuple(roll, pitch, roll_v, pitch_v, roll_t, pitch_t); //urdf
+    }
+
+std::tuple<double, double, double, double, double, double> 
+    ParallelMechanism::motorToJointLeft(double t1, double t2, double v1, double v2,
+                      double tq1, double tq2){
+        return motorToJointAnkle(1, t1, t2, v1, v2, tq1, tq2, last_pitch_l, last_roll_l);
     }
 
 std::tuple<double, double, double, double, double, double> 
     ParallelMechanism::motorToJointRight(double t1, double t2, double v1, double v2,
                       double tq1, double tq2){
-        int side = 2;
-        double pitch_r = 0.0;
-        double roll_r = 0.0;
-        double pitch_r_v = 0.0;
-        double roll_r_v = 0.0;
-        double pitch_r_t = 0.0;
-        double roll_r_t = 0.0;
-        Eigen::Matrix2d J;
-        Eigen::Matrix2d J_l2pr;
-        Eigen::Vector2d L;
-        int flag = 0;
-        t1 = t1+M_PI-0.261;
-        t2 = t2+0.261;
-        fk(t1, t2, last_pitch_r, last_roll_r, side, pitch_r, roll_r);
-        last_pitch_r = pitch_r;
-        last_roll_r = roll_r;
-        jac(t1, t2, pitch_r, roll_r, side, J, J_l2pr, L, flag);
-        velocity_motor2pr(J, v1, v2, pitch_r_v, roll_r_v);
-        torque_motor2pr(J, tq1, tq2, pitch_r_t, roll_r_t);
-    
-        return std::make_tuple(roll_r, pitch_r, roll_r_v, pitch_r_v, roll_r_t, pitch_r_t); //urdf
+        return motorToJointAnkle(2, t1, t2, v1, v2, tq1, tq2, last_pitch_r, last_roll_r);
     }
 
 std::tuple<double, double, double, double, double, double> 

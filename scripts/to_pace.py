@@ -129,6 +129,11 @@ def main():
         "held_not_in_order": {j["name"]: {"pos": j["q0"], "kp": j["kp"], "kd": j["kd"]}
                               for j in meta["joints"] if j["name"] not in in_order},
         "limp_joints": meta["limp_parallel_joints"],
+        # 踝(并联): 真机上是关节空间 PD(与仿真一致), 另有电机侧阻尼 kd_ff 与力矩限幅, 仿真中如需复现见此处
+        "ankle": {
+            "joints": [j["name"] for j in meta["joints"] if j.get("parallel")],
+            **meta.get("ankle", {}),
+        },
         "chirp": meta["chirp"],
     }
     info_path = os.path.splitext(out)[0] + "_info.json"
@@ -141,6 +146,9 @@ def main():
     if info["held_not_in_order"]:
         print("注意: 以下关节在真机上被 PD 保持但不在 joint_order 中, 仿真里需保持在相同位置:",
               ", ".join(info["held_not_in_order"]))
+    if info["ankle"]["joints"]:
+        print(f"注意: 踝为并联关节, 真机上关节空间 PD + 电机侧阻尼 kd_ff={info['ankle'].get('kd_ff', 0)}, "
+              "关节力矩限幅 pitch 60 / roll 20 Nm, 电机力矩限幅 25 Nm")
     if info["limp_joints"]:
         print("注意: 以下并联关节在真机上无力, 仿真里需设为零刚度:", ", ".join(info["limp_joints"]))
 
