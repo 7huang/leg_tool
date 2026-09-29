@@ -33,6 +33,12 @@ void pace_record_tx(uint32_t motor_id);
 /* 返回 0 成功, -1 表示 index 无效 */
 int pace_get_joint_sample(int index, PaceJointSample *out);
 
+/* 发送线程取到空发送队列的次数(按 CAN 通道), reused 表示改为重发上一份快照 */
+void pace_count_tx_queue_empty(int channel, int reused);
+
+/* 返回 0 成功, -1 表示 channel 无效 */
+int pace_get_tx_queue_stats(int channel, uint64_t *empty, uint64_t *reused);
+
 #ifdef __cplusplus
 }
 #endif

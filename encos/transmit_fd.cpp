@@ -42,24 +42,39 @@ void Encos_CANFD_Data_Get()
         }
 }
 
+// 打包线程(sendMotorCmd_)与本线程各自以约 1kHz 自由运行, 中间只隔一个容量为 1 的队列,
+// 两者相位漂移时本线程会取到空队列。tiktak 照常前进, 轮到的那组电机这一拍就没有报文,
+// 而且可能连续多轮都落在同一组上(实测单个电机最长约 50ms 收不到指令)。
+// 队列里的报文是整机指令快照, 队列为空时重发上一份快照与本该发送的内容只差 1~2ms;
+// 只重发不超过 kReuseMaxAgeNs 的快照, 打包线程真正停止时仍会停发, 保留电机的 CAN 超时保护。
+static const int64_t kReuseMaxAgeNs = 3000000;
+static EtherCAT_Msg_ptr last_msg_tx[CHANNEL_NUMBER];
+static int64_t last_msg_tx_ns[CHANNEL_NUMBER] = {0};
+
 void Encos_CANFD_Command_Set()
 {
     int channel_data[6] = {0,0,0,0,0,0};
     EtherCAT_Msg_ptr msg_tx[6] = {};
+    const int64_t now_ns = pace_now_ns();
 
     // 寻找数据的TX总线
     for (int channel = 0; channel < 6; ++channel)
     {
         // 检测无锁队列是否为空
         if (messages_fd_tx[channel].empty()) {
-            // std::cout << "Queue is empty, nothing to pop.\n";
+            const bool reuse = last_msg_tx[channel] && now_ns - last_msg_tx_ns[channel] <= kReuseMaxAgeNs;
+            pace_count_tx_queue_empty(channel, reuse);
+            if (reuse){
+                channel_data[channel] = 1;
+                msg_tx[channel] = last_msg_tx[channel];
+            }
         }
         else{
             channel_data[channel] = 1;
             msg_tx[channel] = messages_fd_tx[channel].front();
             messages_fd_tx[channel].pop();
-            // EtherCAT_Msg &can_msg_tx = *msg_tx;
-            // encos_send_frames(can_msg_tx.motor[0].id, can_msg_tx.motor[0].data, can_msg_tx.motor[0].dlc, 1);
+            last_msg_tx[channel] = msg_tx[channel];
+            last_msg_tx_ns[channel] = now_ns;
         }
     }
     // 根据顺序向TX总线发送

@@ -1,14 +1,18 @@
 #include "pace_stamp.h"
 
+#include <atomic>
 #include <mutex>
 #include <time.h>
 
 namespace {
 
 constexpr int kJointNum = 29;
+constexpr int kChannelNum = 6;
 
 std::mutex g_lock[kJointNum];
 PaceJointSample g_sample[kJointNum] = {};
+std::atomic<uint64_t> g_tx_empty[kChannelNum];
+std::atomic<uint64_t> g_tx_reused[kChannelNum];
 
 // 与 math_ops.c 的 fd_id_2_index 映射相同, 但对 0 / 0x7FF 等无效 id 静默返回 -1,
 // 避免在 1kHz 发送线程里刷屏
@@ -61,5 +65,24 @@ int pace_get_joint_sample(int index, PaceJointSample *out){
     }
     std::lock_guard<std::mutex> guard(g_lock[index]);
     *out = g_sample[index];
+    return 0;
+}
+
+void pace_count_tx_queue_empty(int channel, int reused){
+    if (channel < 0 || channel >= kChannelNum){
+        return;
+    }
+    g_tx_empty[channel].fetch_add(1, std::memory_order_relaxed);
+    if (reused){
+        g_tx_reused[channel].fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+int pace_get_tx_queue_stats(int channel, uint64_t *empty, uint64_t *reused){
+    if (channel < 0 || channel >= kChannelNum || empty == nullptr || reused == nullptr){
+        return -1;
+    }
+    *empty = g_tx_empty[channel].load(std::memory_order_relaxed);
+    *reused = g_tx_reused[channel].load(std::memory_order_relaxed);
     return 0;
 }

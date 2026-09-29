@@ -1,0 +1,32 @@
+# 低阻尼对照组: 与 gains_yaoguwu_plus_122500i.txt 相同, 只把 8 right_hip_yaw_joint 的 kd 从 6 改为 2
+# 用于 PACE 辨识惯量与延迟, 以及与训练增益的数据交叉验证
+# index name kp kd
+0 left_hip_pitch_joint 30 6
+1 left_hip_roll_joint 80 16
+2 left_hip_yaw_joint 30 6
+3 left_knee_joint 80 16
+4 left_ankle_pitch_joint 25 5
+5 left_ankle_roll_joint 25 5
+6 right_hip_pitch_joint 30 6
+7 right_hip_roll_joint 80 16
+8 right_hip_yaw_joint 30 2
+9 right_knee_joint 80 16
+10 right_ankle_pitch_joint 25 5
+11 right_ankle_roll_joint 25 5
+12 waist_yaw_joint 30 6
+13 waist_roll_joint 25 5
+14 waist_pitch_joint 25 5
+15 left_shoulder_pitch_joint 8 2
+16 left_shoulder_roll_joint 8 2
+17 left_shoulder_yaw_joint 8 2
+18 left_elbow_joint 8 2
+19 left_wrist_roll_joint 8 2
+20 left_wrist_pitch_joint 8 2
+21 left_wrist_yaw_joint 8 2
+22 right_shoulder_pitch_joint 8 2
+23 right_shoulder_roll_joint 8 2
+24 right_shoulder_yaw_joint 8 2
+25 right_elbow_joint 8 2
+26 right_wrist_roll_joint 8 2
+27 right_wrist_pitch_joint 8 2
+28 right_wrist_yaw_joint 8 2

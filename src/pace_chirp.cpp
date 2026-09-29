@@ -861,6 +861,12 @@ int main(int argc, char **argv){
         if (frames[k] > 1 && last_rx > first_rx) fb_hz[k] = (frames[k] - 1) / ((last_rx - first_rx) * 1e-9);
     }
 
+    // 参与关节所在 CAN 通道上, 发送线程取到空队列(并改为重发上一份快照)的次数, 整个运行期间累计
+    bool channel_used[CHANNEL_NUMBER] = {false};
+    for (const Joint &J : joints) channel_used[fd_index_2_channel(J.index)] = true;
+    uint64_t tx_empty[CHANNEL_NUMBER] = {0}, tx_reused[CHANNEL_NUMBER] = {0};
+    for (int c = 0; c < CHANNEL_NUMBER; ++c) pace_get_tx_queue_stats(c, &tx_empty[c], &tx_reused[c]);
+
     // ---------- 落盘 ----------
     const bool ok_csv = write_ticks(dir, joints, ticks, recs, n_ticks, t0);
     const std::string meta_path = dir + "/meta.json";
@@ -901,6 +907,15 @@ int main(int argc, char **argv){
         fprintf(mf, "  \"safety\": {\"max_vel\": %.3f, \"max_tau\": %.3f, \"max_err\": %.3f, \"stale_ms\": %.1f},\n",
                 o.max_vel, o.max_tau, o.max_err, o.stale_ms);
         fprintf(mf, "  \"ticks\": %zu,\n  \"overruns\": %u,\n", n_ticks, overruns);
+        fprintf(mf, "  \"tx_queue\": [");
+        bool first_channel = true;
+        for (int c = 0; c < CHANNEL_NUMBER; ++c){
+            if (!channel_used[c]) continue;
+            fprintf(mf, "%s{\"channel\": %d, \"empty\": %llu, \"reused\": %llu}", first_channel ? "" : ", ", c,
+                    (unsigned long long)tx_empty[c], (unsigned long long)tx_reused[c]);
+            first_channel = false;
+        }
+        fprintf(mf, "],\n");
         fprintf(mf, "  \"completed\": %s,\n  \"abort_reason\": \"%s\"\n", abort_reason[0] == '\0' ? "true" : "false",
                 json_escape(abort_reason).c_str());
         fprintf(mf, "}\n");
@@ -911,6 +926,11 @@ int main(int argc, char **argv){
     for (size_t k = 0; k < nj; ++k){
         printf("[PACE] %-28s chirp 段反馈 %u 帧 约 %.1f Hz, 最大间隔 %.2f ms, 最大 |q_des-q| %.4f rad\n",
                kJointNames[joints[k].index], frames[k], fb_hz[k], max_gap_ms[k], max_track[k]);
+    }
+    for (int c = 0; c < CHANNEL_NUMBER; ++c){
+        if (!channel_used[c]) continue;
+        printf("[PACE] CAN 通道 %d: 发送队列为空 %llu 次, 其中重发上一份快照 %llu 次\n", c,
+               (unsigned long long)tx_empty[c], (unsigned long long)tx_reused[c]);
     }
     printf("[PACE] 输出: %s/ticks.csv%s, meta.json%s\n", dir.c_str(), ok_csv ? "" : "(写入失败!)", ok_meta ? "" : "(写入失败!)");
 

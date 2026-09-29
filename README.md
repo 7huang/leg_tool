@@ -181,3 +181,4 @@ ticks.csv 中每个参与关节 i 有一组列: q_des_i, kp_i, kd_i, q_i, qd_i, 
 #变更日志
 - 2026-09-28: 新增 pace_single_joint(PACE 单关节 chirp 采集); 底层库增加逐关节收发时间戳(encos/pace_stamp.*)。
 - 2026-09-29: 新增 pace_chirp(多关节 PACE 采集, URDF 坐标)、scripts/export_gains.py、scripts/to_pace.py; analyze_ticks.py 支持 pace_chirp 输出。
+- 2026-09-29: 修复发送线程偶尔连续多轮漏发同一组电机的问题(实测单个电机最长约 50ms 收不到指令): 发送队列为空时重发不超过 3ms 的上一份指令快照(encos/transmit_fd.cpp)。此修改同样作用于部署用的 libkeenon_lf1.so。
