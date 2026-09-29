@@ -30,3 +30,12 @@ compile_commands.json
 # Logs & temp
 *.log
 *.tmp
+
+# PACE 采集数据与分析图: 统一放在 data/<运行目录>/ 下
+data/
+pace_log/
+# 散落在其它目录的采集/分析输出(pace_single_joint 与 scripts/analyze_ticks.py 的固定文件名)
+ticks.csv
+plan.csv
+meta.json
+analysis_*.png

@@ -107,6 +107,20 @@ cmd = df[["t_cmd_ns", "q_des", "kp", "kd"]]
 meas = df[df["rx_count"].diff() > 0][["rx_ns", "q", "qd", "tau"]]
 ```
 
+## 数据检查
+用 scripts/analyze_ticks.py 检查一次采集(需要 numpy、matplotlib; 同目录下必须有 meta.json):
+```
+python3 scripts/analyze_ticks.py build/pace_log/<运行目录>
+```
+输出:
+- 指令/测量/发送帧数
+- 发送与回传间隔分布, 以及回传间隔 > 6 ms 时丢帧发生在发送端还是回传端
+- 发送 -> 回传解包延迟
+- 控制循环抖动
+- chirp 段闭环频率响应, 以及惯量 I、粘滞阻尼 b、库伦摩擦 Fc、延迟 T 的粗估计(仅用于检查数据, 正式辨识交给 PACE)
+
+图片 analysis_time.png / analysis_timing.png / analysis_bode.png 保存在运行目录(可用 --out 指定)。
+
 ## 注意事项
 - 指令从 t_cmd_ns 到实际上总线约有 0-6 ms 延迟(1 kHz 打包线程 + 1 kHz 发送线程 + 每个电机每 4 ms 轮到一次), 这部分与部署链路一致, 交给 PACE 作为执行器延迟辨识。
 - 电机为应答模式, 发一帧指令才回一帧状态。电机 ID 1-4、7-10、16-29 的回传约 250 Hz, 5/6/11/12 与 41-43 约 1 kHz。
