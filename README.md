@@ -197,9 +197,12 @@ python3 scripts/to_pace.py build/pace_log/<运行目录> --dt 0.005 --joint-orde
 - --hold limb(默认)现在也会保持同肢体的踝, 例如只激励右膝时右踝 PD 保持, 不再无力。
 - 首次运行建议先只激励踝(如 `--joints 10,11 --amp 0.03 --f1 2`), 确认解算后的角度方向、跟踪正常, 再做整条腿。
 - 转换得到的 chirp_data_info.json 中 ankle 字段记录踝关节、kd_ff 与力矩限幅, 仿真中如需复现可参考。
+- 同一条 chirp 同时激励踝 pitch 和 roll 且振幅相同时, 运动全部落在一个电机上(pitch 对应两电机同向转, roll 对应反向转), 另一个电机几乎不动、得不到激励。整条腿采集时只激励踝 pitch(roll 自动保持), 再单独采一次 roll(`--joints 11`)。
+- 底层 fk 的收敛阈值较松(杆长误差约 0.1 mm), 以上一帧解为初值时关节角呈台阶状, 误差约 1 mrad RMS、最大约 3 mrad(部署链路同样如此)。to_pace.py 默认用 motor_q_* 列按严格收敛重新正解踝角度(scripts/ankle_fk.py), --ankle-fk lib 则使用采集时记录的值; 两者差异打印在终端并写入 chirp_data_info.json 的 ankle.dof_pos_fk。
 
 #变更日志
 - 2026-09-28: 新增 pace_single_joint(PACE 单关节 chirp 采集); 底层库增加逐关节收发时间戳(encos/pace_stamp.*)。
 - 2026-09-29: 新增 pace_chirp(多关节 PACE 采集, URDF 坐标)、scripts/export_gains.py、scripts/to_pace.py; analyze_ticks.py 支持 pace_chirp 输出。
 - 2026-09-29: 修复发送线程偶尔连续多轮漏发同一组电机的问题(实测单个电机最长约 50ms 收不到指令): 发送队列为空时重发不超过 3ms 的上一份指令快照(encos/transmit_fd.cpp)。此修改同样作用于部署用的 libkeenon_lf1.so。
 - 2026-09-29: pace_chirp 支持并联踝(4/5/10/11), 可整条腿一起采集; --hold limb 同时保持同肢体的踝; 新增 --ankle-kd-ff; ParallelMechanism 增加不依赖全局状态的 motorToJointAnkle(motorToJointLeft/Right 改为调用它, 结果不变)。
+- 2026-09-29: to_pace.py 默认用踝电机原始角严格正解踝 pitch/roll(scripts/ankle_fk.py), 消除底层 fk 收敛阈值造成的约 1-3 mrad 台阶误差; 底层解算未改动。

@@ -14,6 +14,8 @@
     dof_pos    : 对回传帧 (rx_ns, q) 线性插值; --meas zoh 时取不晚于网格时刻的最后一帧
                  (zoh 会额外引入平均约半个回传周期的滞后, 被 PACE 算进延迟)
 时间窗口默认从 hold_pre 开始(关节静止在中心位置, 与仿真初始状态一致)到 hold_post 结束。
+踝(并联): 默认用 motor_q_<m> 列按严格收敛重新正解 pitch/roll(见 ankle_fk.py), 消除底层 fk 收敛阈值
+          造成的台阶误差; --ankle-fk lib 则直接使用采集时记录的 q(与部署时底层解算一致)。
 """
 import argparse
 import csv
@@ -22,6 +24,8 @@ import os
 import sys
 
 import numpy as np
+
+from ankle_fk import ANKLES, motor_to_joint
 
 NS = 1e-9
 
@@ -56,6 +60,8 @@ def main():
     parser.add_argument("--start", default="hold_pre", help="起始阶段, 默认 hold_pre")
     parser.add_argument("--end", default="hold_post", help="结束阶段, 默认 hold_post")
     parser.add_argument("--meas", choices=["linear", "zoh"], default="linear", help="测量值重采样方式")
+    parser.add_argument("--ankle-fk", choices=["exact", "lib"], default="exact",
+                        help="踝关节角: exact 用电机原始角严格正解(默认), lib 用采集时底层解算的值")
     parser.add_argument("-o", "--output", help="输出文件, 默认 <运行目录>/chirp_data.pt")
     args = parser.parse_args()
 
@@ -74,6 +80,31 @@ def main():
             sys.exit(f"这些关节不在本次采集中: {missing}")
     else:
         order = [j["name"] for j in meta["joints"]]
+
+    ankle_fk_used = {}
+    if args.ankle_fk == "exact":
+        for ip, (side, ma, mb, ir) in ANKLES.items():
+            if f"q_{ip}" not in d:
+                continue
+            cols = [f"motor_q_{ma}", f"motor_q_{mb}", f"motor_rx_count_{ma}", f"motor_rx_count_{mb}"]
+            if any(c not in d for c in cols):
+                print(f"警告: 缺少 {ip}/{ir} 的电机原始列(旧版 pace_chirp 采集), 踝使用采集时记录的 q", file=sys.stderr)
+                continue
+            # 两个电机都已有回传的行才能解算
+            ok = (d[f"motor_rx_count_{ma}"] > 0) & (d[f"motor_rx_count_{mb}"] > 0)
+            p, r = motor_to_joint(side, d[f"motor_q_{ma}"][ok], d[f"motor_q_{mb}"][ok], d[f"q_{ip}"][ok], d[f"q_{ir}"][ok])
+            if not (np.all(np.isfinite(p)) and np.all(np.isfinite(r))):
+                sys.exit(f"踝 {ip}/{ir} 严格正解出现 NaN/Inf, 可改用 --ankle-fk lib")
+            dp = p - d[f"q_{ip}"][ok]
+            dr = r - d[f"q_{ir}"][ok]
+            d[f"q_{ip}"] = d[f"q_{ip}"].copy()
+            d[f"q_{ir}"] = d[f"q_{ir}"].copy()
+            d[f"q_{ip}"][ok] = p
+            d[f"q_{ir}"][ok] = r
+            for i, e in ((ip, dp), (ir, dr)):
+                ankle_fk_used[i] = {"rms_change_rad": float(np.sqrt(np.mean(e ** 2))), "max_change_rad": float(np.abs(e).max())}
+                print(f"踝 {i}: 严格正解相对采集记录值 均方根 {ankle_fk_used[i]['rms_change_rad'] * 1e3:.2f} mrad, "
+                      f"最大 {ankle_fk_used[i]['max_change_rad'] * 1e3:.2f} mrad")
 
     t_cmd = d["t_cmd_ns"]
     t_begin, t_end = phase_window(d["phase"], t_cmd, args.start, args.end)
@@ -133,6 +164,10 @@ def main():
         "ankle": {
             "joints": [j["name"] for j in meta["joints"] if j.get("parallel")],
             **meta.get("ankle", {}),
+            "dof_pos_fk": {"method": "exact" if ankle_fk_used else "lib",
+                           "change_vs_recorded": {meta_name: ankle_fk_used[j["index"]]
+                                                  for j in meta["joints"] for meta_name in [j["name"]]
+                                                  if j["index"] in ankle_fk_used}},
         },
         "chirp": meta["chirp"],
     }
