@@ -180,6 +180,22 @@ python3 scripts/to_pace.py build/pace_log/<运行目录> --dt 0.005 --joint-orde
 ticks.csv 中每个参与关节 i 有一组列: q_des_i, kp_i, kd_i, q_i, qd_i, tau_i, temperature_i, error_i, rx_ns_i, rx_count_i, tx_ns_i, tx_count_i。
 有踝参与时另有踝电机原始回传列 motor_q_m, motor_qd_m, motor_tau_m, motor_rx_ns_m, motor_rx_count_m(m 为 4/5 或 10/11, get_motor_data 同坐标, 未做并联解算), 用于离线重新解算。
 
+## 两腿镜像采集(吊装时抵消反作用力)
+躯干吊装(非刚性固定)时, 单腿运动的反作用力会让躯干晃动, 仿真中固定基座无法复现。用 --mirror 只写一条腿的参数, 程序自动生成另一条腿:
+```
+sudo ./pace_chirp --gains ../gains_yaoguwu_plus_122500i.txt --joints 0,1,2,3,4 --amps 0.12,0.05,0.05,0.1,0.06 \
+  --centers q0,q0,q0,0.2,q0 --mirror sym --max-err 0.3 --f1 5 --duration 30 --dry-run
+```
+| 模式 | roll/yaw 类(髋 roll、髋 yaw、踝 roll) | pitch 类(髋 pitch、膝、踝 pitch) | 躯干受力 |
+|---|---|---|---|
+| sym | 镜像(同时外展/内收) | 两腿同向 | 左右、偏航抵消; 俯仰反力矩与前后力叠加 |
+| anti | 镜像 | 两腿反相(一前一后) | 左右、俯仰抵消; 产生绕竖直轴的扭矩 |
+
+- 中心位置(--centers)总是按几何镜像生成: pitch 类同值, roll/yaw 类取反, q0 仍为各自当前位置。
+- 对侧符号按 src/pace_chirp.cpp 中 kMirrorGeomSign 计算, 假设左右同名关节 URDF 轴方向相同(G1 类约定)。首次使用先小振幅慢速运行(如 `--amp 0.03 --f1 0.5`)确认实际运动确为镜像, 不对时修改 kMirrorGeomSign。
+- sym 与 anti 哪个躯干晃得少取决于吊装方式, 可在躯干上放手机记录 IMU 对比。
+- 只能写一条腿的关节(0-5 或 6-11), 输出目录与 meta.json 中记录 mirror 模式。
+
 ## 整条腿采集
 一次激励一条腿的全部 6 个关节(髋 pitch/roll/yaw、膝、踝 pitch/roll), 例如右腿, 膝中心设在 0.4 rad:
 ```
@@ -206,3 +222,4 @@ python3 scripts/to_pace.py build/pace_log/<运行目录> --dt 0.005 --joint-orde
 - 2026-09-29: 修复发送线程偶尔连续多轮漏发同一组电机的问题(实测单个电机最长约 50ms 收不到指令): 发送队列为空时重发不超过 3ms 的上一份指令快照(encos/transmit_fd.cpp)。此修改同样作用于部署用的 libkeenon_lf1.so。
 - 2026-09-29: pace_chirp 支持并联踝(4/5/10/11), 可整条腿一起采集; --hold limb 同时保持同肢体的踝; 新增 --ankle-kd-ff; ParallelMechanism 增加不依赖全局状态的 motorToJointAnkle(motorToJointLeft/Right 改为调用它, 结果不变)。
 - 2026-09-29: to_pace.py 默认用踝电机原始角严格正解踝 pitch/roll(scripts/ankle_fk.py), 消除底层 fk 收敛阈值造成的约 1-3 mrad 台阶误差; 底层解算未改动。
+- 2026-09-30: pace_chirp 新增 --mirror sym/anti, 只写一条腿的参数即自动生成另一条腿的镜像/反相运动, 用于吊装时抵消反作用力。

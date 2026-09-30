@@ -89,6 +89,13 @@ const double kPosOffset[kN] = {0, 0, 0, 0, 0, 0,
 
 const char *kLimbName[] = {"left_leg", "right_leg", "waist", "left_arm", "right_arm"};
 
+// --mirror: 腿内顺序 hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll。
+// 左右腿几何镜像时对侧关节角(URDF)的符号, 假设左右同名关节轴方向相同(G1 类 URDF 的约定):
+// pitch 类(髋/膝/踝 pitch)同号, roll/yaw 类反号。换机器人或 URDF 时须重新确认。
+const int kMirrorGeomSign[6] = {1, -1, -1, 1, 1, -1};
+// pitch 类关节: anti 模式下对侧反相
+const bool kMirrorPitchLike[6] = {true, false, false, true, true, false};
+
 enum Phase : int { PROBE = 0, ENGAGE, MOVE_IN, HOLD_PRE, CHIRP, HOLD_POST, MOVE_OUT, RELEASE, DAMP, ZERO, DONE };
 const char *kPhaseName[] = {"probe", "engage", "move_in", "hold_pre", "chirp", "hold_post",
                             "move_out", "release", "damp", "zero", "done"};
@@ -155,6 +162,7 @@ struct Options {
     std::vector<double> amps;     // 为空时全部使用 amp
     std::vector<double> centers;  // NAN 表示使用 q0
     std::string hold = "limb";
+    std::string mirror = "none";  // none / sym / anti
     std::string tag;
     double amp = 0.05;
     double f0 = 0.1;
@@ -257,6 +265,10 @@ void print_usage(const char *prog){
            "  --ankle-kd-ff X    踝电机侧附加阻尼 kd_ff[0](电机空间), 默认 0; 与部署一致时填部署值\n"
            "  --out DIR          输出根目录, 默认 ./pace_log\n"
            "  --tag S            输出目录名后缀, 默认 j<下标列表>\n"
+           "  --mirror MODE      只写一条腿的 --joints/--amps/--centers, 自动生成另一条腿(吊装时抵消反作用力):\n"
+           "                     sym  几何镜像: roll/yaw 类对称, pitch 类两腿同向(俯仰反力矩叠加)\n"
+           "                     anti roll/yaw 类对称, pitch 类两腿反相(俯仰反力矩抵消, 但产生绕竖直轴的扭矩)\n"
+           "                     中心位置总是几何镜像; 默认 none\n"
            "  --dry-run          不连接电机, 只检查参数并生成 plan.csv\n"
            "  --confirm-suspended 确认已吊装、急停可用(真机运行必需)\n", prog);
 }
@@ -316,6 +328,7 @@ bool parse_args(int argc, char **argv, Options &o){
         else if (key == "--centers")    ok = parse_double_list(v, o.centers, true);
         else if (key == "--hold")       o.hold = v;
         else if (key == "--tag")        o.tag = v;
+        else if (key == "--mirror")     o.mirror = v;
         else if (key == "--amp")        o.amp = strtod(v, nullptr);
         else if (key == "--f0")         o.f0 = strtod(v, nullptr);
         else if (key == "--f1")         o.f1 = strtod(v, nullptr);
@@ -342,6 +355,47 @@ bool parse_args(int argc, char **argv, Options &o){
         }
     }
     return !o.gains_path.empty() && !o.joints.empty();
+}
+
+// --mirror: 按 kMirrorGeomSign 为 --joints 中的每个腿关节生成对侧关节, 追加到列表末尾
+bool expand_mirror(Options &o){
+    if (o.mirror == "none") return true;
+    if (o.mirror != "sym" && o.mirror != "anti"){
+        fprintf(stderr, "参数错误: --mirror 只能是 none / sym / anti\n");
+        return false;
+    }
+    if (!o.amps.empty() && o.amps.size() != o.joints.size()){
+        fprintf(stderr, "参数错误: --amps 的个数必须与 --joints 相同\n");
+        return false;
+    }
+    if (!o.centers.empty() && o.centers.size() != o.joints.size()){
+        fprintf(stderr, "参数错误: --centers 的个数必须与 --joints 相同\n");
+        return false;
+    }
+    if (o.amps.empty()) o.amps.assign(o.joints.size(), o.amp);
+    if (o.centers.empty()) o.centers.assign(o.joints.size(), NAN);
+    const size_t n = o.joints.size();
+    for (size_t k = 0; k < n; ++k){
+        const int i = o.joints[k];
+        if (i < 0 || i >= 12){
+            fprintf(stderr, "参数错误: --mirror 只支持腿关节(0-11), %d 不是\n", i);
+            return false;
+        }
+        const int j = i < 6 ? i + 6 : i - 6;
+        if (std::find(o.joints.begin(), o.joints.end(), j) != o.joints.end()){
+            fprintf(stderr, "参数错误: 使用 --mirror 时只写一条腿, %s 与 %s 同时出现\n", kJointNames[i], kJointNames[j]);
+            return false;
+        }
+        const int pos = i % 6;
+        const int geom = kMirrorGeomSign[pos];
+        const int motion = (o.mirror == "anti" && kMirrorPitchLike[pos]) ? -geom : geom;
+        o.joints.push_back(j);
+        o.amps.push_back(o.amps[k] * motion);
+        o.centers.push_back(std::isnan(o.centers[k]) ? NAN : o.centers[k] * geom);
+        printf("[PACE] mirror(%s): %-26s amp %+.4f -> %-26s amp %+.4f\n", o.mirror.c_str(), kJointNames[i], o.amps[k],
+               kJointNames[j], o.amps.back());
+    }
+    return true;
 }
 
 // 文件格式(每行): index name kp kd, # 开头为注释
@@ -692,6 +746,7 @@ int main(int argc, char **argv){
         return 2;
     }
     std::vector<Joint> joints;
+    if (!expand_mirror(o)) return 2;
     if (!build_joints(o, joints)) return 2;
     const size_t nj = joints.size();
     print_plan(o, joints);
@@ -1029,6 +1084,7 @@ int main(int argc, char **argv){
         fprintf(mf, "  \"time_base\": \"CLOCK_MONOTONIC ns, relative to t0\",\n");
         fprintf(mf, "  \"t0_monotonic_ns\": %lld,\n", (long long)t0);
         fprintf(mf, "  \"gains_file\": \"%s\",\n", json_escape(o.gains_path).c_str());
+        fprintf(mf, "  \"mirror\": \"%s\",\n", o.mirror.c_str());
         fprintf(mf, "  \"joints\": [\n");
         for (size_t k = 0; k < nj; ++k){
             const Joint &J = joints[k];
