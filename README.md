@@ -180,6 +180,18 @@ python3 scripts/to_pace.py build/pace_log/<运行目录> --dt 0.005 --joint-orde
 ticks.csv 中每个参与关节 i 有一组列: q_des_i, kp_i, kd_i, q_i, qd_i, tau_i, temperature_i, error_i, rx_ns_i, rx_count_i, tx_ns_i, tx_count_i。
 有踝参与时另有踝电机原始回传列 motor_q_m, motor_qd_m, motor_tau_m, motor_rx_ns_m, motor_rx_count_m(m 为 4/5 或 10/11, get_motor_data 同坐标, 未做并联解算), 用于离线重新解算。
 
+## 逐关节采集脚本(吊装晃动大时)
+每次只激励一个关节(同腿其余关节 PD 保持), 依次跑完两条腿, 每个关节运行前询问, 中止时可重试/跳过/退出:
+```
+scripts/pace_single_joints.sh --dry-run            # 先检查全部参数
+sudo scripts/pace_single_joints.sh                 # 右腿 -> 左腿, 默认 f1=3 Hz, duration=30 s
+sudo scripts/pace_single_joints.sh --legs right --only hip_pitch,knee --f1 2
+```
+- 振幅/中心在脚本的 JOINT_TABLE 中: 髋 pitch 0.12(避开 ±0.10 rad 挡点, --max-err 0.3)、髋 roll/yaw 0.05、膝 0.1(中心 0.3)、踝 pitch 0.06、踝 roll 0.05。
+- 输出在 build/pace_log/<日期_时间>_single/ 下, 每个关节一个运行目录, 另有 <tag>.log 与 summary.txt(每次运行的退出码和目录)。
+- 转换时 --joint-order 只写该次激励的关节, 例如 `python3 scripts/to_pace.py <目录> --dt 0.005 --joint-order right_knee_joint`。
+- 左膝中心 0.3 假设两腿膝关节正方向均为弯曲, 首次运行左膝时观察 move_in 阶段, 方向不对立即 Ctrl+C。
+
 ## 两腿镜像采集(吊装时抵消反作用力)
 躯干吊装(非刚性固定)时, 单腿运动的反作用力会让躯干晃动, 仿真中固定基座无法复现。用 --mirror 只写一条腿的参数, 程序自动生成另一条腿:
 ```
@@ -223,3 +235,4 @@ python3 scripts/to_pace.py build/pace_log/<运行目录> --dt 0.005 --joint-orde
 - 2026-09-29: pace_chirp 支持并联踝(4/5/10/11), 可整条腿一起采集; --hold limb 同时保持同肢体的踝; 新增 --ankle-kd-ff; ParallelMechanism 增加不依赖全局状态的 motorToJointAnkle(motorToJointLeft/Right 改为调用它, 结果不变)。
 - 2026-09-29: to_pace.py 默认用踝电机原始角严格正解踝 pitch/roll(scripts/ankle_fk.py), 消除底层 fk 收敛阈值造成的约 1-3 mrad 台阶误差; 底层解算未改动。
 - 2026-09-30: pace_chirp 新增 --mirror sym/anti, 只写一条腿的参数即自动生成另一条腿的镜像/反相运动, 用于吊装时抵消反作用力。
+- 2026-09-30: 新增 scripts/pace_single_joints.sh, 依次对两条腿逐关节 chirp 采集。
