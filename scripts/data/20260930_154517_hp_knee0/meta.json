@@ -1,0 +1,31 @@
+{
+  "schema": "pace_chirp/1",
+  "angle_frame": "urdf: q_urdf = (q_api * motor_direction + pos_offset) * dance_dir, leg_offset = 0",
+  "time_base": "CLOCK_MONOTONIC ns, relative to t0",
+  "t0_monotonic_ns": 1072815844364,
+  "gains_file": "../gains_yaoguwu_plus_122500i.txt",
+  "joints": [
+    {"index": 6, "name": "right_hip_pitch_joint", "motor_id": 7, "parallel": false, "limb": "right_leg", "role": "excite", "kp": 30, "kd": 6, "amp": 0.2, "center": -0.010490, "q0": -0.010490, "motor_direction": 1, "dance_dir": -1, "pos_offset": 0.0000, "lf1_zero_offset_rad": 0.000000, "chirp_feedback_frames": 4958, "chirp_feedback_hz": 247.91, "max_rx_gap_ms": 8.218, "max_track_err": 0.11255},
+    {"index": 7, "name": "right_hip_roll_joint", "motor_id": 8, "parallel": false, "limb": "right_leg", "role": "hold", "kp": 80, "kd": 16, "amp": 0, "center": 0.003840, "q0": 0.003840, "motor_direction": -1, "dance_dir": -1, "pos_offset": 0.0000, "lf1_zero_offset_rad": 1.570700, "chirp_feedback_frames": 4958, "chirp_feedback_hz": 247.91, "max_rx_gap_ms": 8.129, "max_track_err": 0.00038},
+    {"index": 8, "name": "right_hip_yaw_joint", "motor_id": 9, "parallel": false, "limb": "right_leg", "role": "hold", "kp": 30, "kd": 6, "amp": 0, "center": -0.031854, "q0": -0.031854, "motor_direction": 1, "dance_dir": -1, "pos_offset": 0.0000, "lf1_zero_offset_rad": 0.000000, "chirp_feedback_frames": 4959, "chirp_feedback_hz": 247.96, "max_rx_gap_ms": 4.517, "max_track_err": 0.00000},
+    {"index": 9, "name": "right_knee_joint", "motor_id": 10, "parallel": false, "limb": "right_leg", "role": "hold", "kp": 80, "kd": 16, "amp": 0, "center": 0.005933, "q0": 0.005933, "motor_direction": -1, "dance_dir": -1, "pos_offset": 0.0000, "lf1_zero_offset_rad": 0.139600, "chirp_feedback_frames": 4959, "chirp_feedback_hz": 247.96, "max_rx_gap_ms": 4.545, "max_track_err": 0.00114},
+    {"index": 10, "name": "right_ankle_pitch_joint", "motor_id": 11, "parallel": true, "limb": "right_leg", "role": "hold", "kp": 25, "kd": 5, "amp": 0, "center": -0.111426, "q0": -0.111426, "motor_direction": 1, "dance_dir": 1, "pos_offset": 0.0000, "lf1_zero_offset_rad": 0.000000, "chirp_feedback_frames": 17968, "chirp_feedback_hz": 898.39, "max_rx_gap_ms": 3.145, "max_track_err": 0.00000},
+    {"index": 11, "name": "right_ankle_roll_joint", "motor_id": 12, "parallel": true, "limb": "right_leg", "role": "hold", "kp": 25, "kd": 5, "amp": 0, "center": -0.025669, "q0": -0.025669, "motor_direction": 1, "dance_dir": 1, "pos_offset": 0.0000, "lf1_zero_offset_rad": 0.000000, "chirp_feedback_frames": 17968, "chirp_feedback_hz": 898.39, "max_rx_gap_ms": 3.145, "max_track_err": 0.00000}
+  ],
+  "limp_parallel_joints": [],
+  "ankle": {"kd_ff": 0, "motors": [{"index": 10, "motor_id": 11}, {"index": 11, "motor_id": 12}], "joint_tau_limit": {"pitch": 60, "roll": 20}, "motor_tau_limit": 25,
+            "note": "joint-space PD computed in C tx thread from solved joint state; motor kd = kd_ff; motor_* columns = raw motor feedback (get_motor_data frame, before parallel solve)"},
+  "chirp": {"type": "linear", "f0": 0.100000, "f1": 0.300000, "duration": 20.000000, "ramp": 1.000000},
+  "move_time": 2.000,
+  "hold_pre": 1.000,
+  "hold_post": 1.000,
+  "rate_hz": 1000,
+  "qd_des": 0.0,
+  "tau_ff": 0.0,
+  "safety": {"max_vel": 5.000, "max_tau": 30.000, "max_err": 0.450, "stale_ms": 50.0},
+  "ticks": 27601,
+  "overruns": 0,
+  "tx_queue": [{"channel": 1, "empty": 202, "reused": 190}],
+  "completed": true,
+  "abort_reason": ""
+}
