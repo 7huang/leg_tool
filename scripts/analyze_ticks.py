@@ -3,7 +3,7 @@
 分析 pace_single_joint / pace_chirp 的输出(ticks.csv + meta.json)。
 
 用法:
-    python3 analyze_ticks.py <运行目录 或 ticks.csv> [--joint 下标] [--out 输出目录] [--show]
+    python3 analyze_ticks.py <运行目录 或 ticks.csv> [--joint 下标] [--urdf robot.urdf] [--out 输出目录] [--show]
 
 对每个被激励关节(pace_chirp 可用 --joint 只看其中一个):
     1. 拆分指令序列 (t_cmd_ns, q_des) 与测量序列 (rx_count 增加的行: rx_ns, q, qd, tau)
@@ -121,16 +121,17 @@ def frequency_response(meas_t, meas_q, cmd_t, cmd_q, chirp):
     return np.array(freqs), np.array(H), np.array(motion_amp)
 
 
-def fit_actuator_model(freqs, H, motion_amp, kp, kd, max_delay_ms=30.0):
+def fit_actuator_model(freqs, H, motion_amp, kp, kd, kg=0.0, max_delay_ms=30.0):
     """
-    闭环模型: H (-I w^2 + i w (kd + b) + i 4Fc/(pi X) + kp) = kp e^{-i w T}
-    库伦摩擦用描述函数等效(X 为运动幅值)。对每个 T 网格求 I, b, Fc 的线性最小二乘, 取残差最小者。
+    闭环模型: H (-I w^2 + i w (kd + b) + i 4Fc/(pi X) + kp + kg) = kp e^{-i w T}
+    库伦摩擦用描述函数等效(X 为运动幅值); kg 为重力刚度(由 URDF 给定, 不参与拟合)。
+    对每个 T 网格求 I, b, Fc 的线性最小二乘, 取残差最小者。
     """
     w = 2 * np.pi * freqs
     best = None
     for T in np.arange(0.0, max_delay_ms * 1e-3 + 1e-9, 1e-4):
         A = np.column_stack([-w ** 2 * H, 1j * w * H, 1j * 4 / (np.pi * motion_amp) * H])
-        rhs = kp * np.exp(-1j * w * T) - kp * H - 1j * w * kd * H
+        rhs = kp * np.exp(-1j * w * T) - (kp + kg) * H - 1j * w * kd * H
         A_ri = np.vstack([A.real, A.imag])
         rhs_ri = np.concatenate([rhs.real, rhs.imag])
         coef, *_ = np.linalg.lstsq(A_ri, rhs_ri, rcond=None)
@@ -138,16 +139,23 @@ def fit_actuator_model(freqs, H, motion_amp, kp, kd, max_delay_ms=30.0):
         if best is None or res < best[0]:
             best = (res, T, coef)
     _, T, (I, b, Fc) = best
-    return {"I": I, "b": b, "Fc": Fc, "T": T}
+    return {"I": I, "b": b, "Fc": Fc, "T": T, "kg": kg}
 
 
 def model_response(freqs, motion_amp, kp, kd, p):
     w = 2 * np.pi * freqs
-    den = -p["I"] * w ** 2 + 1j * w * (kd + p["b"]) + 1j * 4 * p["Fc"] / (np.pi * motion_amp) + kp
+    den = -p["I"] * w ** 2 + 1j * w * (kd + p["b"]) + 1j * 4 * p["Fc"] / (np.pi * motion_amp) + kp + p.get("kg", 0.0)
     return kp * np.exp(-1j * w * p["T"]) / den
 
 
-def analyze_joint(jv, d, meta, out_dir, plt, show):
+def joint_pose(meta):
+    """采集时的关节姿态(各关节中心位置), 用于 URDF 计算"""
+    if meta["schema"] == "pace_single_joint/1":
+        return {meta.get("joint_name", ""): meta["q0"]}
+    return {j["name"]: j["center"] for j in meta["joints"]}
+
+
+def analyze_joint(jv, d, meta, out_dir, plt, show, robot=None):
     c = jv["cols"]
     phase = d["phase"]
     kp, kd = jv["kp"], jv["kd"]
@@ -211,11 +219,16 @@ def analyze_joint(jv, d, meta, out_dir, plt, show):
         freqs, H, motion_amp = frequency_response(meas_t, meas_q, cmd_t, cmd_q, chirp)
         for f, h in zip(freqs[:: max(1, len(freqs) // 12)], H[:: max(1, len(freqs) // 12)]):
             print(f"  f={f:5.2f} Hz  |H|={abs(h):.3f}  相位={np.degrees(np.angle(h)):7.1f} deg")
-        params = fit_actuator_model(freqs, H, motion_amp, kp, kd)
+        urdf = robot.joint_terms(jv["name"], joint_pose(meta)) if robot is not None and jv["name"] in robot.joints else None
+        params = fit_actuator_model(freqs, H, motion_amp, kp, kd, kg=urdf["k_g"] if urdf else 0.0)
         H_model = model_response(freqs, motion_amp, kp, kd, params)
         rel_err = np.abs(H_model - H) / np.abs(H)
         print(f"  模型粗估: I={params['I']:.4f} kg*m^2  b={params['b']:.3f} Nm*s/rad  "
               f"Fc={params['Fc']:.3f} Nm  T={params['T'] * 1e3:.1f} ms  (复响应相对误差 中位 {np.median(rel_err) * 100:.1f}%)")
+        if urdf:
+            armature = params["I"] - urdf["I_link"]
+            print(f"  URDF: 重力刚度 k_g={urdf['k_g']:.2f} Nm/rad(已计入模型), 连杆惯量 {urdf['I_link']:.4f} kg*m^2 "
+                  f"=> armature 约 {armature:.4f} kg*m^2{'  (为负: 数据不可信或基座未固定)' if armature < 0 else ''}")
     else:
         print(f"[3] 保持关节: chirp 段 |q - q_des| 最大 {np.max(np.abs(meas_q - np.interp(meas_t, cmd_t, cmd_q))):.4f} rad")
 
@@ -305,6 +318,7 @@ def main():
     parser.add_argument("--out", help="图片输出目录, 默认与 ticks.csv 相同")
     parser.add_argument("--no-plot", action="store_true", help="不生成图片")
     parser.add_argument("--show", action="store_true", help="弹出图窗")
+    parser.add_argument("--urdf", help="机器人 URDF: 模型中计入重力刚度, 并给出连杆惯量与 armature 估计")
     args = parser.parse_args()
 
     ticks_path = os.path.join(args.path, "ticks.csv") if os.path.isdir(args.path) else args.path
@@ -340,8 +354,12 @@ def main():
             sys.exit(f"本次采集中没有关节 {args.joint}")
     elif not args.all:
         views = [v for v in views if v["excited"]]
+    robot = None
+    if args.urdf:
+        from urdf_dynamics import Robot
+        robot = Robot(args.urdf)
     for jv in views:
-        analyze_joint(jv, d, meta, out_dir, plt, args.show)
+        analyze_joint(jv, d, meta, out_dir, plt, args.show, robot)
 
     if plt is not None:
         print(f"\n图已保存到 {out_dir}: analysis_time_<i>.png, analysis_timing_<i>.png, analysis_bode_<i>.png")

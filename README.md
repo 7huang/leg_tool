@@ -119,7 +119,16 @@ python3 scripts/analyze_ticks.py build/pace_log/<运行目录>
 - 控制循环抖动
 - chirp 段闭环频率响应, 以及惯量 I、粘滞阻尼 b、库伦摩擦 Fc、延迟 T 的粗估计(仅用于检查数据, 正式辨识交给 PACE)
 
-图片 analysis_time_<下标>.png / analysis_timing_<下标>.png / analysis_bode_<下标>.png 保存在运行目录(可用 --out 指定)。pace_chirp 的数据默认只分析被激励关节, --joint 只看某一个, --all 同时看保持关节。
+图片 analysis_time_<下标>.png / analysis_timing_<下标>.png / analysis_bode_<下标>.png 保存在运行目录(可用 --out 指定)。
+
+加 --urdf 时, 模型计入 URDF 算出的重力刚度(吊装时髋 pitch/roll 约 19 Nm/rad, 与 kp 同量级), 并给出连杆惯量与 armature(= 拟合总惯量 - 连杆惯量)估计; armature 为负说明该次数据不可信或基座在晃动:
+```
+python3 scripts/analyze_ticks.py build/pace_log/<运行目录> --urdf urdf/keenon_l1.urdf
+```
+单独查看各关节吊装姿态下的连杆惯量、重力刚度和限位(--pose 可传 meta.json 使用实测姿态):
+```
+python3 scripts/urdf_dynamics.py urdf/keenon_l1.urdf
+```pace_chirp 的数据默认只分析被激励关节, --joint 只看某一个, --all 同时看保持关节。
 
 ## 注意事项
 - 指令从 t_cmd_ns 到实际上总线约有 0-6 ms 延迟(1 kHz 打包线程 + 1 kHz 发送线程 + 每个电机每 4 ms 轮到一次), 这部分与部署链路一致, 交给 PACE 作为执行器延迟辨识。
@@ -140,13 +149,13 @@ python3 scripts/analyze_ticks.py build/pace_log/<运行目录>
 - 支持串联关节和并联踝(4/5/10/11), 踝与部署链路一样做关节空间 PD。并联腰(13/14)不支持, 不发送指令, 处于无力状态, PACE 仿真中要设为零刚度。
 
 ## 步骤
-1. 增益文件: 采集与重新训练统一使用 gains_yaoguwu_plus_122500i.txt(从 dance_medium1 所用策略导出, 与当前走路策略、greetings 等 29 关节策略的增益相同)。换策略时重新导出(有 onnxruntime / onnx 时优先使用, 没有也能直接解析):
+1. 增益文件: 采集与重新训练统一使用 gains_g1_legs.txt(腿部为 G1 取整增益: 髋 pitch/yaw 40/3、髋 roll/膝 100/6、踝 30/2; 腰与手臂同 gains_yaoguwu_plus_122500i.txt)。gains_yaoguwu_plus_122500i.txt 为当前已部署策略的增益(腿部 kd/kp = 0.2, 阻尼过重, 惯量与延迟难以辨识), 其采集数据可作交叉验证。从策略导出增益(有 onnxruntime / onnx 时优先使用, 没有也能直接解析):
 ```
 python3 scripts/export_gains.py <policy.onnx> -o gains_<名称>.txt
 ```
 2. dry-run 检查参数, 例如激励整条右腿的 4 个串联关节, 膝关节中心设在 0.4 rad:
 ```
-sudo ./pace_chirp --gains ../gains_yaoguwu_plus_122500i.txt --joints 6,7,8,9 --amps 0.1,0.05,0.05,0.1 --centers q0,q0,q0,0.4 --f1 5 --duration 30 --dry-run
+sudo ./pace_chirp --gains ../gains_g1_legs.txt --joints 6,7,8,9 --amps 0.1,0.05,0.05,0.1 --centers q0,q0,q0,0.4 --f1 5 --duration 30 --dry-run
 ```
 3. 吊装后真机运行: 同样的命令, 把 --dry-run 换成 --confirm-suspended。
 4. 检查数据:
@@ -180,22 +189,32 @@ python3 scripts/to_pace.py build/pace_log/<运行目录> --dt 0.005 --joint-orde
 ticks.csv 中每个参与关节 i 有一组列: q_des_i, kp_i, kd_i, q_i, qd_i, tau_i, temperature_i, error_i, rx_ns_i, rx_count_i, tx_ns_i, tx_count_i。
 有踝参与时另有踝电机原始回传列 motor_q_m, motor_qd_m, motor_tau_m, motor_rx_ns_m, motor_rx_count_m(m 为 4/5 或 10/11, get_motor_data 同坐标, 未做并联解算), 用于离线重新解算。
 
-## 逐关节采集脚本(吊装晃动大时)
-每次只激励一个关节(同腿其余关节 PD 保持), 依次跑完两条腿, 每个关节运行前询问, 中止时可重试/跳过/退出:
+## 逐关节采集脚本(躯干吊装、无法刚性固定)
+训练与采集统一使用 G1 增益 gains_g1_legs.txt(脚本默认值)。髋 yaw、膝、踝每次只激励一个关节(同腿其余关节 PD 保持), 依次跑完两条腿; 髋 pitch / 髋 roll 腿部惯量大, 单腿运动会让吊装的躯干明显摆动(实测拟合出的总惯量远小于 URDF 连杆惯量), 因此两腿镜像同时激励, 每批只跑一次(髋 pitch 用 anti 抵消俯仰反力矩, 髋 roll 用 sym 抵消左右力)。每次运行前询问, 中止时可重试/跳过/退出:
 ```
 scripts/pace_single_joints.sh --dry-run            # 先检查全部参数
-sudo scripts/pace_single_joints.sh                 # 右腿 -> 左腿, 默认 f1=3 Hz, duration=30 s
-sudo scripts/pace_single_joints.sh --legs right --only hip_pitch,knee --f1 2
+sudo scripts/pace_single_joints.sh                 # 右腿 -> 左腿, f1 按关节表, duration=30 s
+sudo scripts/pace_single_joints.sh --legs right --only hip_yaw,knee
 ```
-- 振幅/中心在脚本的 JOINT_TABLE 中: 髋 pitch 0.12(避开 ±0.10 rad 挡点, --max-err 0.3)、髋 roll/yaw 0.05、膝 0.1(中心 0.3)、踝 pitch 0.06、踝 roll 0.05。
-- 输出在 build/pace_log/<日期_时间>_single/ 下, 每个关节一个运行目录, 另有 <tag>.log 与 summary.txt(每次运行的退出码和目录)。
+- JOINT_TABLE 按 G1 增益与 URDF 模型设计(依据见脚本开头注释):
+
+| 关节 | 振幅 | 中心 | f1 | 模式 | 预测自然频率 / 阻尼比 |
+|---|---|---|---|---|---|
+| 髋 pitch | 0.05 | q0 | 3 Hz | anti(两腿) | 1.24 Hz / 0.20, 谐振处放大约 1.75 倍 |
+| 髋 roll | 0.05 | q0 | 4 Hz | sym(两腿) | 1.87 Hz / 0.30, 谐振处放大约 1.5 倍 |
+| 髋 yaw | 0.05 | q0 | 8 Hz | 单腿 | 3.7 Hz / 0.86 |
+| 膝 | 0.10 | 0.3 | 6 Hz | 单腿 | 3.2 Hz / 0.56 |
+| 踝 pitch | 0.05 | q0 | 8 Hz | 单腿, --max-vel 3.5 | 3.5 Hz / 0.72 |
+| 踝 roll | 0.04 | q0 | 10 Hz | 单腿, --max-vel 3.5 | 5.0 Hz / 1.03 |
+
+- 输出在 build/pace_log/<日期_时间>_single/ 下, 每次运行一个目录(镜像运行的 tag 为 m_hip_pitch / m_hip_roll), 另有 <tag>.log 与 summary.txt(每次运行的振幅、f1、模式、退出码和目录)。
 - 转换时 --joint-order 只写该次激励的关节, 例如 `python3 scripts/to_pace.py <目录> --dt 0.005 --joint-order right_knee_joint`。
 - 左膝中心 0.3 假设两腿膝关节正方向均为弯曲, 首次运行左膝时观察 move_in 阶段, 方向不对立即 Ctrl+C。
 
 ## 两腿镜像采集(吊装时抵消反作用力)
 躯干吊装(非刚性固定)时, 单腿运动的反作用力会让躯干晃动, 仿真中固定基座无法复现。用 --mirror 只写一条腿的参数, 程序自动生成另一条腿:
 ```
-sudo ./pace_chirp --gains ../gains_yaoguwu_plus_122500i.txt --joints 0,1,2,3,4 --amps 0.12,0.05,0.05,0.1,0.06 \
+sudo ./pace_chirp --gains ../gains_g1_legs.txt --joints 0,1,2,3,4 --amps 0.05,0.05,0.05,0.1,0.05 \
   --centers q0,q0,q0,0.2,q0 --mirror sym --max-err 0.3 --f1 5 --duration 30 --dry-run
 ```
 | 模式 | roll/yaw 类(髋 roll、髋 yaw、踝 roll) | pitch 类(髋 pitch、膝、踝 pitch) | 躯干受力 |
@@ -211,7 +230,7 @@ sudo ./pace_chirp --gains ../gains_yaoguwu_plus_122500i.txt --joints 0,1,2,3,4 -
 ## 整条腿采集
 一次激励一条腿的全部 6 个关节(髋 pitch/roll/yaw、膝、踝 pitch/roll), 例如右腿, 膝中心设在 0.4 rad:
 ```
-sudo ./pace_chirp --gains ../gains_yaoguwu_plus_122500i.txt --joints 6,7,8,9,10,11 --amps 0.1,0.05,0.05,0.1,0.05,0.05 --centers q0,q0,q0,0.4,q0,q0 --f1 5 --duration 30 --dry-run
+sudo ./pace_chirp --gains ../gains_g1_legs.txt --joints 6,7,8,9,10,11 --amps 0.05,0.05,0.05,0.1,0.05,0.05 --centers q0,q0,q0,0.4,q0,q0 --f1 5 --duration 30 --dry-run
 ```
 左腿为 `--joints 0,1,2,3,4,5`。确认无误后把 --dry-run 换成 --confirm-suspended。转换时关节顺序同样与 PACE 环境一致:
 ```
@@ -236,3 +255,4 @@ python3 scripts/to_pace.py build/pace_log/<运行目录> --dt 0.005 --joint-orde
 - 2026-09-29: to_pace.py 默认用踝电机原始角严格正解踝 pitch/roll(scripts/ankle_fk.py), 消除底层 fk 收敛阈值造成的约 1-3 mrad 台阶误差; 底层解算未改动。
 - 2026-09-30: pace_chirp 新增 --mirror sym/anti, 只写一条腿的参数即自动生成另一条腿的镜像/反相运动, 用于吊装时抵消反作用力。
 - 2026-09-30: 新增 scripts/pace_single_joints.sh, 依次对两条腿逐关节 chirp 采集。
+- 2026-10-08: 训练与采集改用 G1 增益(gains_g1_legs.txt); 新增 urdf/keenon_l1.urdf 与 scripts/urdf_dynamics.py(吊装姿态下的连杆惯量、重力刚度); analyze_ticks.py 新增 --urdf(模型计入重力刚度, 给出 armature 估计); pace_single_joints.sh 按 URDF 模型逐关节设定振幅与 f1, 髋 pitch/roll 改为两腿镜像(anti/sym)。
