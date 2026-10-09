@@ -1,0 +1,32 @@
+# 固定头部(torso_link)采集用: 腿部(0-11)与 gains_g1_legs.txt 相同(训练用 G1 增益); 腰调高刚度以减小骨盆相对躯干的运动
+# (仅用于采集, PACE 仿真中腰必须使用同样的 kp/kd; 腰 roll/pitch 为并联关节空间 PD, 关节力矩限幅 60 Nm)
+# index name kp kd
+0 left_hip_pitch_joint 40 3
+1 left_hip_roll_joint 100 6
+2 left_hip_yaw_joint 40 3
+3 left_knee_joint 100 6
+4 left_ankle_pitch_joint 30 2
+5 left_ankle_roll_joint 30 2
+6 right_hip_pitch_joint 40 3
+7 right_hip_roll_joint 100 6
+8 right_hip_yaw_joint 40 3
+9 right_knee_joint 100 6
+10 right_ankle_pitch_joint 30 2
+11 right_ankle_roll_joint 30 2
+12 waist_yaw_joint 100 5
+13 waist_roll_joint 200 20
+14 waist_pitch_joint 200 20
+15 left_shoulder_pitch_joint 8 2
+16 left_shoulder_roll_joint 8 2
+17 left_shoulder_yaw_joint 8 2
+18 left_elbow_joint 8 2
+19 left_wrist_roll_joint 8 2
+20 left_wrist_pitch_joint 8 2
+21 left_wrist_yaw_joint 8 2
+22 right_shoulder_pitch_joint 8 2
+23 right_shoulder_roll_joint 8 2
+24 right_shoulder_yaw_joint 8 2
+25 right_elbow_joint 8 2
+26 right_wrist_roll_joint 8 2
+27 right_wrist_pitch_joint 8 2
+28 right_wrist_yaw_joint 8 2

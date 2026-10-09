@@ -10,7 +10,10 @@
  *   计算关节 PD 力矩, 再经雅可比换成两个电机的力矩(关节力矩限幅 pitch 60 / roll 20 Nm, 电机力矩限幅 25 Nm),
  *   电机侧另加阻尼 kd_ff[0](--ankle-kd-ff)。同一只脚的 pitch/roll 共用两个电机, 必须同时参与。
  *   记录用的关节反馈由本程序用两个电机各自带时间戳的回传做正解得到, 与底层 get_motor_data 的解算相同。
- * 限制: 并联的腰(13/14)不支持, 不发送指令, 处于无力状态, PACE 仿真中需要把它们设成零刚度。
+ * 腰 roll/pitch(并联, 13/14): 只支持 PD 保持(不支持激励), 处理方式与踝相同: 底层发送线程做关节空间 PD
+ *   (关节力矩限幅 60 Nm, 电机力矩限幅 50 Nm), 电机侧另加阻尼 kd_ff[1](--waist-kd-ff), 两者必须同时参与。
+ *   用于固定头部(即 torso_link)时 PD 保持腰, 让骨盆尽量不动; PACE 仿真中固定 torso_link, 腰按相同 PD 建模。
+ *   不参与时不发送指令, 处于无力状态, PACE 仿真中需要把它们设成零刚度。
  *
  * 坐标: 命令行输入与输出均为 URDF(策略)坐标, 换算与部署链路一致:
  *   low_control.py      : q_low  = (q_api - leg_offset) * motor_direction
@@ -124,28 +127,31 @@ double sign_api_to_urdf(int i){
     return kMotorDirection[i] * kDanceDir[i];
 }
 
+// 共用两个电机的并联关节组: 0 左踝(4 pitch, 5 roll), 1 右踝(10 pitch, 11 roll), 2 腰(13 roll, 14 pitch)。
+// 组内两个关节下标同时也是两个电机的下标; 返回 -1 表示不是并联关节
+constexpr int kParGroups = 3;
+constexpr int kWaistGroup = 2;
+const int kParIndex[kParGroups][2] = {{4, 5}, {10, 11}, {13, 14}};
+
 bool is_parallel_joint(int i){
     return i == 4 || i == 5 || i == 10 || i == 11 || i == 13 || i == 14;
 }
 
-// 踝: 4/10 为 pitch, 5/11 为 roll; 返回 0 左脚, 1 右脚, -1 不是踝
-int ankle_side(int i){
-    if (i == 4 || i == 5) return 0;
-    if (i == 10 || i == 11) return 1;
+int par_group(int i){
+    for (int g = 0; g < kParGroups; ++g){
+        if (i == kParIndex[g][0] || i == kParIndex[g][1]) return g;
+    }
     return -1;
 }
 
-bool is_ankle_roll(int i){
-    return i == 5 || i == 11;
+int par_partner(int i){
+    const int g = par_group(i);
+    return i == kParIndex[g][0] ? kParIndex[g][1] : kParIndex[g][0];
 }
 
-int ankle_partner(int i){
-    return is_ankle_roll(i) ? i - 1 : i + 1;
-}
-
-// 本程序不支持的关节: 并联腰
-bool is_unsupported_joint(int i){
-    return is_parallel_joint(i) && ankle_side(i) < 0;
+// 本程序不支持激励的关节: 并联腰(只能 PD 保持)
+bool is_waist_parallel(int i){
+    return i == 13 || i == 14;
 }
 
 int limb_of(int i){
@@ -179,6 +185,7 @@ struct Options {
     double max_err = 0.25;
     double stale_ms = 50.0;
     double ankle_kd_ff = 0.0;
+    double waist_kd_ff = 0.0;
     std::string out = "./pace_log";
     bool confirm = false;
     bool dry_run = false;
@@ -226,7 +233,7 @@ struct JointRec {
     uint8_t error;
 };
 
-// 踝电机原始回传(get_motor_data 同坐标: 电机角 - 零偏, 未做并联解算), 供离线重新解算
+// 并联(踝/腰)电机原始回传(get_motor_data 同坐标: 电机角 - 零偏, 未做并联解算), 供离线重新解算
 struct MotorRec {
     float q;
     float qd;
@@ -244,12 +251,13 @@ void on_signal(int){
 void print_usage(const char *prog){
     printf("用法: sudo %s --gains <gains.txt> --joints <i,j,...> [选项] --confirm-suspended\n"
            "  --gains FILE       各关节 kp/kd, 由 scripts/export_gains.py 从策略 ONNX 导出\n"
-           "  --joints LIST      被激励的关节下标(逗号分隔), 支持串联关节与踝(4/5/10/11), 不支持腰 13/14\n"
+           "  --joints LIST      被激励的关节下标(逗号分隔), 支持串联关节与踝(4/5/10/11), 腰 13/14 只能保持\n"
            "  --amp X            所有被激励关节的 chirp 振幅 [rad], 默认 0.05\n"
            "  --amps LIST        逐关节振幅(可为负, 决定起始方向), 覆盖 --amp\n"
            "  --centers LIST     逐关节 chirp 中心 [rad, URDF 坐标], q0 表示当前位置, 默认全部 q0\n"
-           "  --hold SPEC        PD 保持的关节: limb(默认, 同肢体其余关节) / none / 下标列表\n"
-           "                     踝的 pitch/roll 共用电机, 只列其中一个时另一个自动 PD 保持\n"
+           "  --hold SPEC        PD 保持的关节: limb(默认, 同肢体其余关节) / body(两腿与腰 0-14 中未激励的关节,\n"
+           "                     固定头部时使用) / none / 下标列表\n"
+           "                     踝、腰的 pitch/roll 共用电机, 只列其中一个时另一个自动 PD 保持\n"
            "  --f0 X --f1 X      起止频率 [Hz], 默认 0.1 -> 2.0, 上限 10\n"
            "  --duration X       chirp 时长 [s], 默认 20\n"
            "  --ramp X           chirp 首尾余弦淡入淡出 [s], 默认 1.0\n"
@@ -263,6 +271,7 @@ void print_usage(const char *prog){
            "  --max-err X        |q - q_des| 超过该值即中止 [rad], 默认 0.25\n"
            "  --stale-ms X       反馈超过该时长未更新即中止 [ms], 默认 50\n"
            "  --ankle-kd-ff X    踝电机侧附加阻尼 kd_ff[0](电机空间), 默认 0; 与部署一致时填部署值\n"
+           "  --waist-kd-ff X    腰 roll/pitch 电机侧附加阻尼 kd_ff[1](电机空间), 默认 0\n"
            "  --out DIR          输出根目录, 默认 ./pace_log\n"
            "  --tag S            输出目录名后缀, 默认 j<下标列表>\n"
            "  --mirror MODE      只写一条腿的 --joints/--amps/--centers, 自动生成另一条腿(吊装时抵消反作用力):\n"
@@ -270,7 +279,7 @@ void print_usage(const char *prog){
            "                     anti roll/yaw 类对称, pitch 类两腿反相(俯仰反力矩抵消, 但产生绕竖直轴的扭矩)\n"
            "                     中心位置总是几何镜像; 默认 none\n"
            "  --dry-run          不连接电机, 只检查参数并生成 plan.csv\n"
-           "  --confirm-suspended 确认已吊装、急停可用(真机运行必需)\n", prog);
+           "  --confirm-suspended 确认已吊装(或固定头部)、急停可用(真机运行必需)\n", prog);
 }
 
 std::vector<std::string> split(const std::string &s){
@@ -344,6 +353,7 @@ bool parse_args(int argc, char **argv, Options &o){
         else if (key == "--max-err")    o.max_err = strtod(v, nullptr);
         else if (key == "--stale-ms")   o.stale_ms = strtod(v, nullptr);
         else if (key == "--ankle-kd-ff") o.ankle_kd_ff = strtod(v, nullptr);
+        else if (key == "--waist-kd-ff") o.waist_kd_ff = strtod(v, nullptr);
         else if (key == "--out")        o.out = v;
         else {
             fprintf(stderr, "未知参数: %s\n", key.c_str());
@@ -451,6 +461,7 @@ bool build_joints(const Options &o, std::vector<Joint> &joints){
     if (o.rate < 100 || o.rate > 1000) return fail("--rate 必须在 [100, 1000] Hz");
     if (!(o.max_vel > 0 && o.max_tau > 0 && o.max_err > 0 && o.stale_ms >= 10)) return fail("安全阈值必须为正, --stale-ms >= 10");
     if (!(o.ankle_kd_ff >= 0 && o.ankle_kd_ff <= 5)) return fail("--ankle-kd-ff 必须在 [0, 5]");
+    if (!(o.waist_kd_ff >= 0 && o.waist_kd_ff <= 10)) return fail("--waist-kd-ff 必须在 [0, 10]");
     if (!o.amps.empty() && o.amps.size() != o.joints.size()) return fail("--amps 的个数必须与 --joints 相同");
     if (!o.centers.empty() && o.centers.size() != o.joints.size()) return fail("--centers 的个数必须与 --joints 相同");
 
@@ -462,7 +473,7 @@ bool build_joints(const Options &o, std::vector<Joint> &joints){
     for (size_t k = 0; k < o.joints.size(); ++k){
         const int i = o.joints[k];
         if (i < 0 || i >= kN) return fail("--joints 下标必须在 [0, 28]");
-        if (is_unsupported_joint(i)) return fail(std::string("并联腰关节不支持激励: ") + kJointNames[i]);
+        if (is_waist_parallel(i)) return fail(std::string("并联腰关节不支持激励(只能保持): ") + kJointNames[i]);
         if (excited[i]) return fail(std::string("--joints 中重复: ") + kJointNames[i]);
         excited[i] = true;
         involved[i] = true;
@@ -470,27 +481,32 @@ bool build_joints(const Options &o, std::vector<Joint> &joints){
 
     if (o.hold == "limb"){
         for (int i = 0; i < kN; ++i){
-            if (excited[i] || is_unsupported_joint(i)) continue;
+            if (excited[i]) continue;
             for (int j : o.joints){
                 if (limb_of(i) == limb_of(j)) involved[i] = true;
             }
         }
     }
+    else if (o.hold == "body"){
+        // 两腿与腰: 固定头部(torso_link)时, 骨盆经腰关节与躯干相连, 两腿与腰全部 PD 保持; 手臂挂在固定的躯干上, 与腿无关
+        for (int i = 0; i < 15; ++i){
+            if (!excited[i]) involved[i] = true;
+        }
+    }
     else if (o.hold != "none"){
         std::vector<int> hold;
-        if (!parse_int_list(o.hold, hold)) return fail("--hold 必须是 limb、none 或下标列表");
+        if (!parse_int_list(o.hold, hold)) return fail("--hold 必须是 limb、body、none 或下标列表");
         for (int i : hold){
             if (i < 0 || i >= kN) return fail("--hold 下标必须在 [0, 28]");
-            if (is_unsupported_joint(i)) return fail(std::string("并联腰关节不支持保持: ") + kJointNames[i]);
             if (excited[i]) return fail(std::string("关节同时出现在 --joints 与 --hold: ") + kJointNames[i]);
             involved[i] = true;
         }
     }
-    // 同一只脚的 pitch/roll 由同两个电机驱动, 必须一起下发关节 PD
+    // 同一只脚(或腰)的 pitch/roll 由同两个电机驱动, 必须一起下发关节 PD
     for (int i = 0; i < kN; ++i){
-        if (involved[i] && ankle_side(i) >= 0 && !involved[ankle_partner(i)]){
-            involved[ankle_partner(i)] = true;
-            printf("[PACE] 注意: %s 与 %s 共用电机, 后者自动加入 PD 保持\n", kJointNames[i], kJointNames[ankle_partner(i)]);
+        if (involved[i] && par_group(i) >= 0 && !involved[par_partner(i)]){
+            involved[par_partner(i)] = true;
+            printf("[PACE] 注意: %s 与 %s 共用电机, 后者自动加入 PD 保持\n", kJointNames[i], kJointNames[par_partner(i)]);
         }
     }
 
@@ -603,45 +619,55 @@ std::vector<int> limp_parallel_joints(const std::vector<Joint> &joints){
     return out;
 }
 
-bool has_ankle(const std::vector<Joint> &joints){
+bool has_group(const std::vector<Joint> &joints, int group){
     for (const Joint &J : joints){
-        if (ankle_side(J.index) >= 0) return true;
+        if (par_group(J.index) == group) return true;
     }
     return false;
 }
 
-// 踝正解: 两个电机的回传(get_motor_data 同坐标, 电机角 - 零偏) -> pitch/roll 关节反馈(API 坐标)。
-// 与 convert_motor_data 相同: 电机量取反后传入 motorToJointLeft/Right。
+// 并联正解: 组内两个电机的回传(get_motor_data 同坐标, 电机角 - 零偏) -> 两个关节的反馈(API 坐标),
+// out[0]/out[1] 对应 kParIndex[group][0]/[1]。与 convert_motor_data 相同: 电机量取反后传入,
+// 踝按 (pitch 电机, roll 电机) 传入 motorToJointLeft/Right; 腰的两个电机交叉传入 motorToJointW(14, 13)。
 // 时间戳/计数: rx_ns 取两电机较新者(该时刻两个电机的数据都已到齐), rx_count 取较小者(两个电机都有新帧才算一帧新测量)。
-struct AnkleSolver {
+struct ParallelSolver {
     ParallelMechanism pm;
     double last_pitch = 0.0;
     double last_roll = 0.0;
 
-    void solve(int side, const PaceJointSample &mp, const PaceJointSample &mr,
-               PaceJointSample &pitch, PaceJointSample &roll){
+    void solve(int group, const PaceJointSample motor_fb[], PaceJointSample out[2]){
+        const PaceJointSample &ma = motor_fb[kParIndex[group][0]];
+        const PaceJointSample &mb = motor_fb[kParIndex[group][1]];
         double tr, tp, vr, vp, tq_r, tq_p;
-        std::tie(tr, tp, vr, vp, tq_r, tq_p) = pm.motorToJointAnkle(side + 1, -mp.q, -mr.q, -mp.qd, -mr.qd,
-                                                                    -mp.tau, -mr.tau, last_pitch, last_roll);
+        if (group == kWaistGroup){
+            std::tie(tr, tp, vr, vp, tq_r, tq_p) = pm.motorToJointWaist(-mb.q, -ma.q, -mb.qd, -ma.qd,
+                                                                        -mb.tau, -ma.tau, last_pitch, last_roll);
+        }
+        else {
+            std::tie(tr, tp, vr, vp, tq_r, tq_p) = pm.motorToJointAnkle(group + 1, -ma.q, -mb.q, -ma.qd, -mb.qd,
+                                                                        -ma.tau, -mb.tau, last_pitch, last_roll);
+        }
         if (!std::isfinite(last_pitch) || !std::isfinite(last_roll)){
             last_pitch = 0.0;  // 迭代发散时下一次从零位重新开始
             last_roll = 0.0;
         }
         PaceJointSample base;
-        base.temperature = std::max(mp.temperature, mr.temperature);
-        base.error = mp.error | mr.error;
-        base.rx_ns = std::max(mp.rx_ns, mr.rx_ns);
-        base.rx_count = std::min(mp.rx_count, mr.rx_count);
-        base.tx_ns = std::max(mp.tx_ns, mr.tx_ns);
-        base.tx_count = std::min(mp.tx_count, mr.tx_count);
-        pitch = base;
+        base.temperature = std::max(ma.temperature, mb.temperature);
+        base.error = ma.error | mb.error;
+        base.rx_ns = std::max(ma.rx_ns, mb.rx_ns);
+        base.rx_count = std::min(ma.rx_count, mb.rx_count);
+        base.tx_ns = std::max(ma.tx_ns, mb.tx_ns);
+        base.tx_count = std::min(ma.tx_count, mb.tx_count);
+        PaceJointSample pitch = base, roll = base;
         pitch.q = (float)tp;
         pitch.qd = (float)vp;
         pitch.tau = (float)tq_p;
-        roll = base;
         roll.q = (float)tr;
         roll.qd = (float)vr;
         roll.tau = (float)tq_r;
+        // 踝: [0] pitch, [1] roll; 腰: [0] 13 roll, [1] 14 pitch
+        out[0] = group == kWaistGroup ? roll : pitch;
+        out[1] = group == kWaistGroup ? pitch : roll;
     }
 };
 
@@ -653,10 +679,13 @@ void print_plan(const Options &o, const std::vector<Joint> &joints){
         if (J.excited && !std::isnan(J.center)) snprintf(center, sizeof(center), "%.4f", J.center);
         printf("[PACE] %-4d %-28s %-7s %8.2f %8.3f %8.4f %8s%s\n", J.index, kJointNames[J.index],
                J.excited ? "excite" : "hold", J.kp, J.kd, J.excited ? J.amp : 0.0, J.excited ? center : "q0",
-               ankle_side(J.index) >= 0 ? "  (并联, 关节空间 PD)" : "");
+               par_group(J.index) >= 0 ? "  (并联, 关节空间 PD)" : "");
     }
-    if (has_ankle(joints)){
+    if (has_group(joints, 0) || has_group(joints, 1)){
         printf("[PACE] 踝电机侧附加阻尼 kd_ff[0] = %.3f\n", o.ankle_kd_ff);
+    }
+    if (has_group(joints, kWaistGroup)){
+        printf("[PACE] 腰电机侧附加阻尼 kd_ff[1] = %.3f\n", o.waist_kd_ff);
     }
     printf("[PACE] 同肢体中不发送指令(无力)的并联关节:");
     const std::vector<int> limp = limp_parallel_joints(joints);
@@ -770,25 +799,25 @@ int main(int argc, char **argv){
     std::vector<JointRec> recs(max_ticks * nj);
     std::vector<PaceJointSample> fb(nj);
     std::vector<double> q(nj), qd(nj), tau(nj);
-    std::vector<int64_t> oldest_rx_ns(nj);  // 踝取两个电机中较旧的一帧, 用于超时检查
+    std::vector<int64_t> oldest_rx_ns(nj);  // 并联关节取两个电机中较旧的一帧, 用于超时检查
     std::vector<char> fresh(nj);
 
-    // 踝: 参与的脚及其电机(下标 4/5 或 10/11), 两个电机的原始回传都记录下来
-    bool side_used[2] = {false, false};
+    // 并联(踝/腰): 参与的组及其电机(下标即 kParIndex), 两个电机的原始回传都记录下来
+    bool group_used[kParGroups] = {false};
     for (const Joint &J : joints){
-        if (ankle_side(J.index) >= 0) side_used[ankle_side(J.index)] = true;
+        if (par_group(J.index) >= 0) group_used[par_group(J.index)] = true;
     }
-    std::vector<int> ankle_motors;
-    for (int side = 0; side < 2; ++side){
-        if (!side_used[side]) continue;
-        ankle_motors.push_back(side == 0 ? 4 : 10);
-        ankle_motors.push_back(side == 0 ? 5 : 11);
+    std::vector<int> par_motors;
+    for (int g = 0; g < kParGroups; ++g){
+        if (!group_used[g]) continue;
+        par_motors.push_back(kParIndex[g][0]);
+        par_motors.push_back(kParIndex[g][1]);
     }
-    const size_t nm = ankle_motors.size();
+    const size_t nm = par_motors.size();
     std::vector<MotorRec> mrecs(max_ticks * nm);
     PaceJointSample motor_fb[kN] = {};
-    PaceJointSample ankle_fb[2][2];  // [脚][0 pitch / 1 roll]
-    AnkleSolver ankle_solver[2];
+    PaceJointSample par_fb[kParGroups][2];  // [组][与 kParIndex 相同顺序]
+    ParallelSolver par_solver[kParGroups];
     size_t n_ticks = 0;
     if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0){
         printf("[PACE] 警告: mlockall 失败(%s), 可能出现缺页抖动\n", strerror(errno));
@@ -832,18 +861,16 @@ int main(int argc, char **argv){
     for (uint32_t tick = 0; phase != DONE && n_ticks < max_ticks; ++tick){
         const int64_t t_tick = next;
         const int64_t t_read = pace_now_ns();
-        for (int m : ankle_motors) pace_get_joint_sample(m, &motor_fb[m]);
-        for (int side = 0; side < 2; ++side){
-            if (!side_used[side]) continue;
-            const int ip = side == 0 ? 4 : 10;
-            ankle_solver[side].solve(side, motor_fb[ip], motor_fb[ip + 1], ankle_fb[side][0], ankle_fb[side][1]);
+        for (int m : par_motors) pace_get_joint_sample(m, &motor_fb[m]);
+        for (int g = 0; g < kParGroups; ++g){
+            if (group_used[g]) par_solver[g].solve(g, motor_fb, par_fb[g]);
         }
         for (size_t k = 0; k < nj; ++k){
             const int i = joints[k].index;
-            if (ankle_side(i) >= 0){
-                fb[k] = ankle_fb[ankle_side(i)][is_ankle_roll(i) ? 1 : 0];
-                const int ip = ankle_side(i) == 0 ? 4 : 10;
-                oldest_rx_ns[k] = std::min(motor_fb[ip].rx_ns, motor_fb[ip + 1].rx_ns);
+            const int g = par_group(i);
+            if (g >= 0){
+                fb[k] = par_fb[g][i == kParIndex[g][0] ? 0 : 1];
+                oldest_rx_ns[k] = std::min(motor_fb[kParIndex[g][0]].rx_ns, motor_fb[kParIndex[g][1]].rx_ns);
             }
             else {
                 pace_get_joint_sample(i, &fb[k]);
@@ -1010,7 +1037,7 @@ int main(int argc, char **argv){
             r.error = fb[k].error;
         }
         for (size_t k = 0; k < nm; ++k){
-            const PaceJointSample &s = motor_fb[ankle_motors[k]];
+            const PaceJointSample &s = motor_fb[par_motors[k]];
             MotorRec &m = mrecs[n_ticks * nm + k];
             m.q = s.q;
             m.qd = s.qd;
@@ -1018,8 +1045,9 @@ int main(int argc, char **argv){
             m.rx_ns = s.rx_ns;
             m.rx_count = s.rx_count;
         }
-        // 踝电机侧附加阻尼, ZERO 之后撤掉, 保证最后一帧是零力矩
+        // 踝/腰电机侧附加阻尼, ZERO 之后撤掉, 保证最后一帧是零力矩
         cmd.kd_ff[0] = phase < ZERO ? (float)o.ankle_kd_ff : 0.0f;
+        cmd.kd_ff[1] = phase < ZERO ? (float)o.waist_kd_ff : 0.0f;
         sendMotorCmd(&cmd);
         tr.t_tick_ns = t_tick;
         tr.t_read_ns = t_read;
@@ -1045,6 +1073,7 @@ int main(int argc, char **argv){
         cmd.motor_id[J.index] = 0;
     }
     cmd.kd_ff[0] = 0.0f;
+    cmd.kd_ff[1] = 0.0f;
     sendMotorCmd(&cmd);
     usleep(20 * 1000);
 
@@ -1073,7 +1102,7 @@ int main(int argc, char **argv){
     for (int c = 0; c < CHANNEL_NUMBER; ++c) pace_get_tx_queue_stats(c, &tx_empty[c], &tx_reused[c]);
 
     // ---------- 落盘 ----------
-    const bool ok_csv = write_ticks(dir, joints, ticks, recs, ankle_motors, mrecs, n_ticks, t0);
+    const bool ok_csv = write_ticks(dir, joints, ticks, recs, par_motors, mrecs, n_ticks, t0);
     const std::string meta_path = dir + "/meta.json";
     FILE *mf = fopen(meta_path.c_str(), "w");
     const bool ok_meta = mf != nullptr;
@@ -1085,6 +1114,7 @@ int main(int argc, char **argv){
         fprintf(mf, "  \"t0_monotonic_ns\": %lld,\n", (long long)t0);
         fprintf(mf, "  \"gains_file\": \"%s\",\n", json_escape(o.gains_path).c_str());
         fprintf(mf, "  \"mirror\": \"%s\",\n", o.mirror.c_str());
+        fprintf(mf, "  \"hold\": \"%s\",\n", json_escape(o.hold).c_str());
         fprintf(mf, "  \"joints\": [\n");
         for (size_t k = 0; k < nj; ++k){
             const Joint &J = joints[k];
@@ -1093,7 +1123,7 @@ int main(int argc, char **argv){
                         "\"kp\": %.6g, \"kd\": %.6g, \"amp\": %.6g, \"center\": %.6f, \"q0\": %.6f, "
                         "\"motor_direction\": %d, \"dance_dir\": %d, \"pos_offset\": %.4f, \"lf1_zero_offset_rad\": %.6f, "
                         "\"chirp_feedback_frames\": %u, \"chirp_feedback_hz\": %.2f, \"max_rx_gap_ms\": %.3f, \"max_track_err\": %.5f}%s\n",
-                    i, kJointNames[i], fd_index_2_id(i), ankle_side(i) >= 0 ? "true" : "false", kLimbName[limb_of(i)],
+                    i, kJointNames[i], fd_index_2_id(i), par_group(i) >= 0 ? "true" : "false", kLimbName[limb_of(i)],
                     J.excited ? "excite" : "hold",
                     J.kp, J.kd, J.excited ? J.amp : 0.0, J.excited ? J.center : J.q0, J.q0,
                     kMotorDirection[i], kDanceDir[i], kPosOffset[i], lf1_zero_offset_rad[i],
@@ -1106,12 +1136,23 @@ int main(int argc, char **argv){
             fprintf(mf, "%s\"%s\"", k ? ", " : "", kJointNames[limp[k]]);
         }
         fprintf(mf, "],\n");
+        // 并联组的电机列表: 踝(组 0/1)与腰(组 2)分开写
+        auto print_motors = [&](bool waist){
+            bool first = true;
+            for (int m : par_motors){
+                if ((par_group(m) == kWaistGroup) != waist) continue;
+                fprintf(mf, "%s{\"index\": %d, \"motor_id\": %d}", first ? "" : ", ", m, fd_index_2_id(m));
+                first = false;
+            }
+        };
         fprintf(mf, "  \"ankle\": {\"kd_ff\": %.6g, \"motors\": [", o.ankle_kd_ff);
-        for (size_t k = 0; k < nm; ++k){
-            fprintf(mf, "%s{\"index\": %d, \"motor_id\": %d}", k ? ", " : "", ankle_motors[k], fd_index_2_id(ankle_motors[k]));
-        }
+        print_motors(false);
         fprintf(mf, "], \"joint_tau_limit\": {\"pitch\": 60, \"roll\": 20}, \"motor_tau_limit\": 25,\n"
                     "            \"note\": \"joint-space PD computed in C tx thread from solved joint state; motor kd = kd_ff; motor_* columns = raw motor feedback (get_motor_data frame, before parallel solve)\"},\n");
+        fprintf(mf, "  \"waist\": {\"kd_ff\": %.6g, \"motors\": [", o.waist_kd_ff);
+        print_motors(true);
+        fprintf(mf, "], \"joint_tau_limit\": {\"roll\": 60, \"pitch\": 60}, \"motor_tau_limit\": 50,\n"
+                    "            \"note\": \"waist roll/pitch (13/14) hold only; joint-space PD as for the ankles, motor kd = kd_ff[1]\"},\n");
         fprintf(mf, "  \"chirp\": {\"type\": \"linear\", \"f0\": %.6f, \"f1\": %.6f, \"duration\": %.6f, \"ramp\": %.6f},\n",
                 o.f0, o.f1, o.duration, o.ramp);
         fprintf(mf, "  \"move_time\": %.3f,\n  \"hold_pre\": %.3f,\n  \"hold_post\": %.3f,\n  \"rate_hz\": %d,\n",

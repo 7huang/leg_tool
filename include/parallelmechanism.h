@@ -96,6 +96,10 @@ public:
     std::tuple<double, double, double, double, double, double> 
     motorToJointAnkle(int side, double t1, double t2, double v1, double v2,
                       double tq1, double tq2, double& last_pitch, double& last_roll);
+    // 腰正解, 与 motorToJointW 相同, 迭代初值由调用者保存(同上, 可在其它线程中使用独立实例调用)
+    std::tuple<double, double, double, double, double, double>
+    motorToJointWaist(double t1, double t2, double v1, double v2,
+                      double tq1, double tq2, double& last_pitch, double& last_roll);
 };
 
 #endif

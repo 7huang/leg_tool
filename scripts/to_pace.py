@@ -160,14 +160,21 @@ def main():
         "held_not_in_order": {j["name"]: {"pos": j["q0"], "kp": j["kp"], "kd": j["kd"]}
                               for j in meta["joints"] if j["name"] not in in_order},
         "limp_joints": meta["limp_parallel_joints"],
+        # --hold body: 两腿与腰全部 PD 保持, 采集时头部(torso_link)固定, 仿真中应固定 torso_link 而不是 pelvis
+        "hold": meta.get("hold", "limb"),
         # 踝(并联): 真机上是关节空间 PD(与仿真一致), 另有电机侧阻尼 kd_ff 与力矩限幅, 仿真中如需复现见此处
         "ankle": {
-            "joints": [j["name"] for j in meta["joints"] if j.get("parallel")],
+            "joints": [j["name"] for j in meta["joints"] if j["index"] in (4, 5, 10, 11)],
             **meta.get("ankle", {}),
             "dof_pos_fk": {"method": "exact" if ankle_fk_used else "lib",
                            "change_vs_recorded": {meta_name: ankle_fk_used[j["index"]]
                                                   for j in meta["joints"] for meta_name in [j["name"]]
                                                   if j["index"] in ankle_fk_used}},
+        },
+        # 腰 roll/pitch(并联, 只保持): 关节空间 PD, 电机侧阻尼 kd_ff[1]
+        "waist": {
+            "joints": [j["name"] for j in meta["joints"] if j["index"] in (13, 14)],
+            **meta.get("waist", {}),
         },
         "chirp": meta["chirp"],
     }
@@ -184,6 +191,11 @@ def main():
     if info["ankle"]["joints"]:
         print(f"注意: 踝为并联关节, 真机上关节空间 PD + 电机侧阻尼 kd_ff={info['ankle'].get('kd_ff', 0)}, "
               "关节力矩限幅 pitch 60 / roll 20 Nm, 电机力矩限幅 25 Nm")
+    if info["waist"]["joints"]:
+        print(f"注意: 腰 roll/pitch 为并联关节, 真机上关节空间 PD + 电机侧阻尼 kd_ff={info['waist'].get('kd_ff', 0)}, "
+              "关节力矩限幅 60 Nm, 电机力矩限幅 50 Nm")
+    if info["hold"] == "body":
+        print("注意: --hold body 采集(头部固定), 仿真中固定 torso_link, 两腿与腰按 held_not_in_order 的增益保持")
     if info["limp_joints"]:
         print("注意: 以下并联关节在真机上无力, 仿真里需设为零刚度:", ", ".join(info["limp_joints"]))
 

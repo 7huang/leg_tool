@@ -492,6 +492,12 @@ std::tuple<double, double, double, double, double, double>
 std::tuple<double, double, double, double, double, double> 
     ParallelMechanism::motorToJointW(double t1, double t2, double v1, double v2,
                       double tq1, double tq2){
+        return motorToJointWaist(t1, t2, v1, v2, tq1, tq2, last_pitch_w, last_roll_w);
+    }
+
+std::tuple<double, double, double, double, double, double>
+    ParallelMechanism::motorToJointWaist(double t1, double t2, double v1, double v2,
+                      double tq1, double tq2, double& last_pitch, double& last_roll){
         int side = 3;
         double pitch_w = 0.0;
         double roll_w = 0.0;
@@ -505,9 +511,9 @@ std::tuple<double, double, double, double, double, double>
         int flag = 0;
         t1 = t1 - 0.084;
         t2 = t2+M_PI + 0.084;
-        fk(t1, t2, last_pitch_w, last_roll_w, side, pitch_w, roll_w);
-        last_pitch_w = pitch_w;
-        last_roll_w = roll_w;
+        fk(t1, t2, last_pitch, last_roll, side, pitch_w, roll_w);
+        last_pitch = pitch_w;
+        last_roll = roll_w;
         jac(t1, t2, pitch_w, roll_w, side, J, J_l2pr, L, flag);
         velocity_motor2pr(J, v1, v2, pitch_w_v, roll_w_v);
         torque_motor2pr(J, tq1, tq2, pitch_w_t, roll_w_t);
