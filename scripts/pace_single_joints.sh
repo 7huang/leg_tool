@@ -7,7 +7,7 @@
 #   sudo scripts/pace_single_joints.sh                 # 右腿 -> 左腿, 每个关节运行前询问
 #   scripts/pace_single_joints.sh --dry-run            # 只检查参数, 不连电机(不需要 sudo)
 #   sudo scripts/pace_single_joints.sh --legs right --only hip_yaw,knee
-#   sudo scripts/pace_single_joints.sh --hold body --only hip_pitch,hip_roll   # 固定头部, 两腿与腰全部 PD 保持
+#   sudo scripts/pace_single_joints.sh --hold body --only hip_pitch,hip_roll   # 固定头部, 全身其余关节 PD 保持
 #
 # 选项:
 #   --legs L        right,left(默认) / right / left, 按给定顺序执行; 镜像关节只在第一条腿时运行一次
@@ -17,7 +17,7 @@
 #   --max-err X     跟踪误差中止阈值 [rad], 默认按每次的振幅取 max(0.25, 2*振幅+0.05)
 #   --duration X    chirp 时长 [s], 默认 30
 #   --hold SPEC     传给 pace_chirp 的 --hold: limb(默认, 吊装时同腿其余关节保持) / body(固定头部时,
-#                   两腿与腰 0-14 中未激励的关节全部保持, 腰 roll/pitch 为并联关节空间 PD)
+#                   全身 0-28(两腿、腰、两臂)中未激励的关节全部保持, 腰 roll/pitch 为并联关节空间 PD)
 #   --waist-kd-ff X 腰 roll/pitch 电机侧附加阻尼, 默认 0(只在 --hold body 时起作用)
 #   --out DIR       输出根目录, 默认 build/pace_log/<日期_时间>_single
 #   --gains FILE    增益文件, 默认 gains_g1_legs.txt(训练用 G1 增益)
@@ -181,8 +181,10 @@ for leg in "${leg_list[@]}"; do
                 *) break ;;
             esac
         done
-        # 两次运行之间让腿静止, 下一次 probe 要求关节不动
-        [ "$DRY" -eq 0 ] && sleep 3
+        # 两次运行之间让腿静止, 下一次 probe 要求关节不动(--hold body 时手臂和悬垂的下半身停得慢, 多等一会)
+        if [ "$DRY" -eq 0 ]; then
+            if [ "$HOLD" = "body" ]; then sleep 6; else sleep 3; fi
+        fi
     done
     first_leg=0
 done

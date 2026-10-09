@@ -213,15 +213,16 @@ sudo scripts/pace_single_joints.sh --legs right --only hip_yaw,knee
 - --amp X 覆盖关节表中的振幅(配合 --only); --max-err 默认按每次的振幅取 max(0.25, 2*振幅+0.05)。
 
 ## 固定头部采集(--hold body)
-吊装时躯干随反作用力摆动(实测髋 pitch 拟合惯量远小于 URDF, armature 为负), 固定基座仿真无法复现。URDF 中头部属于 torso_link(无颈关节), 固定头部即固定 torso_link; 骨盆经腰 yaw/roll/pitch 与躯干相连。--hold body 把两腿与腰(0-14)中未激励的关节全部 PD 保持, 腰 roll/pitch(并联)与踝相同, 由底层发送线程做关节空间 PD(关节力矩限幅 60 Nm, 电机力矩限幅 50 Nm, 电机侧阻尼 kd_ff[1] 由 --waist-kd-ff 设置, 默认 0)。手臂挂在固定的躯干上, 与腿部动力学无关, 不保持。
+吊装时躯干随反作用力摆动(实测髋 pitch 拟合惯量远小于 URDF, armature 为负), 固定基座仿真无法复现。URDF 中头部属于 torso_link(无颈关节), 固定头部即固定 torso_link; 骨盆经腰 yaw/roll/pitch 与躯干相连。--hold body 把全身(0-28: 两腿、腰、两臂)中未激励的关节全部 PD 保持, 腰 roll/pitch(并联)与踝相同, 由底层发送线程做关节空间 PD(关节力矩限幅 60 Nm, 电机力矩限幅 50 Nm, 电机侧阻尼 kd_ff[1] 由 --waist-kd-ff 设置, 默认 0)。两臂在 CAN 通道 3/4 上, 不影响腿部通道 0/1 的收发时序。
+- 手臂挂在 torso_link 上, 头部若绝对刚性固定, 腿部运动传不到手臂; 实测不保持手臂时髋 pitch 运动会让手甩起来, 说明头部夹具/头颈连接仍有柔性, 躯干在晃。保持手臂只能压住手臂, 躯干的残余晃动仍在(仿真中 torso_link 完全固定), 应尽量加固头部夹具, 并在数据中检查(手臂关节保持误差可作为躯干晃动的间接指标)。
 ```
 scripts/pace_single_joints.sh --dry-run --hold body --only hip_pitch,hip_roll
 sudo scripts/pace_single_joints.sh --hold body --only hip_pitch,hip_roll
 sudo scripts/pace_single_joints.sh --hold body --gains gains_g1_legs_stiff_waist.txt --only hip_pitch,hip_roll
 ```
 - 骨盆加两腿约 19.5 kg, 吊在腰下方(重力刚度约 80 Nm/rad, 对腰 pitch/roll 轴惯量约 4.5 kg·m²): 默认腰增益(25/5)下腰 pitch/roll 模态约 0.77 Hz、阻尼比约 0.11, 落在 chirp 频带内, 骨盆仍会动。gains_g1_legs_stiff_waist.txt 腿部与 gains_g1_legs.txt 相同, 只把腰调到 yaw 100/5、roll/pitch 200/20 以减小骨盆运动; 首次运行先用默认增益确认腰 PD 正常, 再换刚度高的文件。
-- PACE 仿真中固定 torso_link(不是 pelvis), 腰与两腿按采集时的增益 PD 保持(to_pace.py 输出的 chirp_data_info.json 中 held_not_in_order 与 waist 字段)。腰关节编码器直接记录了骨盆相对躯干的运动(analyze_ticks.py --all 可查看)。
-- 每次运行的 probe 与 release/zero 阶段腰与腿均为零刚度: 躯干直立固定时下半身悬垂在腰下方, 处于稳定平衡, 不会坠落, 但会轻微摆动(腰 yaw 无重力恢复)。头部夹具须能承受整机重量与动态载荷, 吊绳建议保留但放松作为备份。
+- PACE 仿真中固定 torso_link(不是 pelvis), 腰、两腿与两臂按采集时的增益 PD 保持(to_pace.py 输出的 chirp_data_info.json 中 held_not_in_order 与 waist 字段)。腰关节编码器直接记录了骨盆相对躯干的运动(analyze_ticks.py --all 可查看)。
+- 每次运行的 probe 与 release/zero 阶段全身均为零刚度(probe 只有阻尼, 要求所有参与关节静止, 手臂还在摆时会拒绝运行, 等手臂停下再跑): 躯干直立固定时下半身悬垂在腰下方, 处于稳定平衡, 不会坠落, 但会轻微摆动(腰 yaw 无重力恢复)。头部夹具须能承受整机重量与动态载荷, 吊绳建议保留但放松作为备份。
 - 髋 pitch 仍建议 anti(两腿俯仰动量抵消, 腰 pitch 几乎不受激励; 代价是激励腰 yaw)。
 
 ## 两腿镜像采集(吊装时抵消反作用力)
@@ -270,3 +271,4 @@ python3 scripts/to_pace.py build/pace_log/<运行目录> --dt 0.005 --joint-orde
 - 2026-09-30: 新增 scripts/pace_single_joints.sh, 依次对两条腿逐关节 chirp 采集。
 - 2026-10-08: 训练与采集改用 G1 增益(gains_g1_legs.txt); 新增 urdf/keenon_l1.urdf 与 scripts/urdf_dynamics.py(吊装姿态下的连杆惯量、重力刚度); analyze_ticks.py 新增 --urdf(模型计入重力刚度, 给出 armature 估计); pace_single_joints.sh 按 URDF 模型逐关节设定振幅与 f1, 髋 pitch/roll 改为两腿镜像(anti/sym)。
 - 2026-10-09: pace_chirp 支持 PD 保持并联腰(13/14, 与踝相同的关节空间 PD), 新增 --hold body(两腿与腰全部保持, 用于固定头部采集)与 --waist-kd-ff; ParallelMechanism 增加不依赖全局状态的 motorToJointWaist(motorToJointW 改为调用它, 结果不变); pace_single_joints.sh 新增 --hold / --amp / --max-err / --waist-kd-ff, max-err 按振幅自动设定, 髋 pitch 振幅改为 0.20; 新增 gains_g1_legs_stiff_waist.txt。
+- 2026-10-09: --hold body 扩展到全身(0-28), 两臂也 PD 保持(固定头部时髋 pitch 运动会让无力的手臂甩起来)。

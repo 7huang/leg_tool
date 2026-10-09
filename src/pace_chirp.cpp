@@ -255,8 +255,8 @@ void print_usage(const char *prog){
            "  --amp X            所有被激励关节的 chirp 振幅 [rad], 默认 0.05\n"
            "  --amps LIST        逐关节振幅(可为负, 决定起始方向), 覆盖 --amp\n"
            "  --centers LIST     逐关节 chirp 中心 [rad, URDF 坐标], q0 表示当前位置, 默认全部 q0\n"
-           "  --hold SPEC        PD 保持的关节: limb(默认, 同肢体其余关节) / body(两腿与腰 0-14 中未激励的关节,\n"
-           "                     固定头部时使用) / none / 下标列表\n"
+           "  --hold SPEC        PD 保持的关节: limb(默认, 同肢体其余关节) / body(全身 0-28 中未激励的关节: 两腿、腰、\n"
+           "                     两臂, 固定头部时使用) / none / 下标列表\n"
            "                     踝、腰的 pitch/roll 共用电机, 只列其中一个时另一个自动 PD 保持\n"
            "  --f0 X --f1 X      起止频率 [Hz], 默认 0.1 -> 2.0, 上限 10\n"
            "  --duration X       chirp 时长 [s], 默认 20\n"
@@ -488,8 +488,9 @@ bool build_joints(const Options &o, std::vector<Joint> &joints){
         }
     }
     else if (o.hold == "body"){
-        // 两腿与腰: 固定头部(torso_link)时, 骨盆经腰关节与躯干相连, 两腿与腰全部 PD 保持; 手臂挂在固定的躯干上, 与腿无关
-        for (int i = 0; i < 15; ++i){
+        // 全身: 固定头部(torso_link)时, 骨盆经腰关节与躯干相连, 两腿与腰全部 PD 保持; 头部夹具并非绝对刚性,
+        // 躯干的残余晃动会让无力的手臂甩起来, 因此两臂也 PD 保持
+        for (int i = 0; i < kN; ++i){
             if (!excited[i]) involved[i] = true;
         }
     }

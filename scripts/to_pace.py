@@ -160,7 +160,7 @@ def main():
         "held_not_in_order": {j["name"]: {"pos": j["q0"], "kp": j["kp"], "kd": j["kd"]}
                               for j in meta["joints"] if j["name"] not in in_order},
         "limp_joints": meta["limp_parallel_joints"],
-        # --hold body: 两腿与腰全部 PD 保持, 采集时头部(torso_link)固定, 仿真中应固定 torso_link 而不是 pelvis
+        # --hold body: 全身(两腿、腰、两臂)PD 保持, 采集时头部(torso_link)固定, 仿真中应固定 torso_link 而不是 pelvis
         "hold": meta.get("hold", "limb"),
         # 踝(并联): 真机上是关节空间 PD(与仿真一致), 另有电机侧阻尼 kd_ff 与力矩限幅, 仿真中如需复现见此处
         "ankle": {
@@ -195,7 +195,7 @@ def main():
         print(f"注意: 腰 roll/pitch 为并联关节, 真机上关节空间 PD + 电机侧阻尼 kd_ff={info['waist'].get('kd_ff', 0)}, "
               "关节力矩限幅 60 Nm, 电机力矩限幅 50 Nm")
     if info["hold"] == "body":
-        print("注意: --hold body 采集(头部固定), 仿真中固定 torso_link, 两腿与腰按 held_not_in_order 的增益保持")
+        print("注意: --hold body 采集(头部固定), 仿真中固定 torso_link, 其余关节按 held_not_in_order 的位置与增益保持")
     if info["limp_joints"]:
         print("注意: 以下并联关节在真机上无力, 仿真里需设为零刚度:", ", ".join(info["limp_joints"]))
 
