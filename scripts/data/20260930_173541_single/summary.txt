@@ -1,0 +1,13 @@
+tag                index  amp    exit  run_dir
+r_hip_pitch        6      0.12   0     /home/user/keenon_pace_7/leg_tool/build/pace_log/20260930_173541_single/20260930_173556_r_hip_pitch
+r_hip_roll         7      0.05   0     /home/user/keenon_pace_7/leg_tool/build/pace_log/20260930_173541_single/20260930_173640_r_hip_roll
+r_hip_yaw          8      0.05   0     /home/user/keenon_pace_7/leg_tool/build/pace_log/20260930_173541_single/20260930_173723_r_hip_yaw
+r_knee             9      0.10   0     /home/user/keenon_pace_7/leg_tool/build/pace_log/20260930_173541_single/20260930_173807_r_knee
+r_ankle_pitch      10     0.06   0     /home/user/keenon_pace_7/leg_tool/build/pace_log/20260930_173541_single/20260930_173850_r_ankle_pitch
+r_ankle_roll       11     0.05   0     /home/user/keenon_pace_7/leg_tool/build/pace_log/20260930_173541_single/20260930_173933_r_ankle_roll
+l_hip_pitch        0      0.12   0     /home/user/keenon_pace_7/leg_tool/build/pace_log/20260930_173541_single/20260930_174017_l_hip_pitch
+l_hip_roll         1      0.05   0     /home/user/keenon_pace_7/leg_tool/build/pace_log/20260930_173541_single/20260930_174100_l_hip_roll
+l_hip_yaw          2      0.05   0     /home/user/keenon_pace_7/leg_tool/build/pace_log/20260930_173541_single/20260930_174144_l_hip_yaw
+l_knee             3      0.10   0     /home/user/keenon_pace_7/leg_tool/build/pace_log/20260930_173541_single/20260930_174227_l_knee
+l_ankle_pitch      4      0.06   0     /home/user/keenon_pace_7/leg_tool/build/pace_log/20260930_173541_single/20260930_174311_l_ankle_pitch
+l_ankle_roll       5      0.05   0     /home/user/keenon_pace_7/leg_tool/build/pace_log/20260930_173541_single/20260930_174354_l_ankle_roll

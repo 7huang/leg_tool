@@ -1,0 +1,35 @@
+[PACE] chirp 0.10->5.00 Hz / 30.0 s, rate=1000 Hz, move_time=2.0 s
+[PACE] idx  name                         role          kp       kd      amp   center
+[PACE] 6    right_hip_pitch_joint        hold       30.00    6.000   0.0000       q0
+[PACE] 7    right_hip_roll_joint         excite     80.00   16.000   0.0500       q0
+[PACE] 8    right_hip_yaw_joint          hold       30.00    6.000   0.0000       q0
+[PACE] 9    right_knee_joint             hold       80.00   16.000   0.0000       q0
+[PACE] 10   right_ankle_pitch_joint      hold       25.00    5.000   0.0000       q0  (并联, 关节空间 PD)
+[PACE] 11   right_ankle_roll_joint       hold       25.00    5.000   0.0000       q0  (并联, 关节空间 PD)
+[PACE] 踝电机侧附加阻尼 kd_ff[0] = 0.000
+[PACE] 同肢体中不发送指令(无力)的并联关节: 无
+can0 is UP  can1 is UP  can2 is UP  can3 is UP  can4 is UP  can5 is UP  [PACE] 开始: probe 阶段零刚度, 请确认参与关节处于自然下垂/静止位置
+[PACE] right_hip_pitch_joint        q0 = -0.01926  center = -0.01926 (75 帧)
+[PACE] right_hip_roll_joint         q0 = -0.01981  center = -0.01981 (75 帧)
+[PACE] right_hip_yaw_joint          q0 =  0.01354  center =  0.01354 (75 帧)
+[PACE] right_knee_joint             q0 =  0.03531  center =  0.03531 (74 帧)
+[PACE] right_ankle_pitch_joint      q0 = -0.25494  center = -0.25494 (271 帧)
+[PACE] right_ankle_roll_joint       q0 =  0.00068  center =  0.00068 (271 帧)
+[PACE] 0.500 s: probe -> engage
+[PACE] 1.000 s: engage -> move_in
+[PACE] 3.000 s: move_in -> hold_pre
+[PACE] 4.000 s: hold_pre -> chirp
+[PACE] 34.000 s: chirp -> hold_post
+[PACE] 35.000 s: hold_post -> move_out
+[PACE] 37.000 s: move_out -> release
+[PACE] 37.500 s: release -> zero
+[PACE] 37.600 s: zero -> done
+[PACE] 采集完成, 共 37601 拍, 超时 0 拍
+[PACE] right_hip_pitch_joint        chirp 段反馈 7442 帧 约 248.1 Hz, 最大间隔 4.49 ms, 最大 |q_des-q| 0.0000 rad
+[PACE] right_hip_roll_joint         chirp 段反馈 7441 帧 约 248.1 Hz, 最大间隔 4.53 ms, 最大 |q_des-q| 0.0550 rad
+[PACE] right_hip_yaw_joint          chirp 段反馈 7442 帧 约 248.1 Hz, 最大间隔 4.47 ms, 最大 |q_des-q| 0.0000 rad
+[PACE] right_knee_joint             chirp 段反馈 7442 帧 约 248.1 Hz, 最大间隔 4.46 ms, 最大 |q_des-q| 0.0000 rad
+[PACE] right_ankle_pitch_joint      chirp 段反馈 27212 帧 约 907.1 Hz, 最大间隔 3.72 ms, 最大 |q_des-q| 0.0020 rad
+[PACE] right_ankle_roll_joint       chirp 段反馈 27212 帧 约 907.1 Hz, 最大间隔 3.72 ms, 最大 |q_des-q| 0.0016 rad
+[PACE] CAN 通道 1: 发送队列为空 425 次, 其中重发上一份快照 413 次
+[PACE] 输出: /home/user/keenon_pace_7/leg_tool/build/pace_log/20260930_173541_single/20260930_173640_r_hip_roll/ticks.csv, meta.json
