@@ -19,7 +19,10 @@
 #   --hold SPEC     传给 pace_chirp 的 --hold: limb(默认, 吊装时同腿其余关节保持) / body(固定头部时,
 #                   全身 0-28(两腿、腰、两臂)中未激励的关节全部保持, 腰 roll/pitch 为并联关节空间 PD)
 #   --waist-kd-ff X 腰 roll/pitch 电机侧附加阻尼, 默认 0(只在 --hold body 时起作用)
-#   --out DIR       输出根目录, 默认 build/pace_log/<日期_时间>_single
+#   --pose FILE     采集前先把参与关节移到指定位置并 PD 保持(文件为 leg_tool 角度检查输出的 "ID = n, Pos = 度" 行),
+#                   采集后回到初始下垂位置再卸力; 被激励关节的中心默认取该位置(关节表中写了数值中心的除外, 如膝 0.3)
+#   --pose-tol X    到达检查允许的最大误差 [rad], 默认 0.2(PD 无重力补偿, 有稳态误差)
+#   --out DIR      输出根目录, 默认 build/pace_log/<日期_时间>_single
 #   --gains FILE    增益文件, 默认 gains_g1_legs.txt(训练用 G1 增益)
 #   --yes           不逐个询问(仍会在开始时确认一次吊装)
 #   --dry-run       传给 pace_chirp 的 --dry-run
@@ -47,6 +50,8 @@ MAX_ERR=""
 DURATION=30
 HOLD="limb"
 WAIST_KD_FF=0
+POSE=""
+POSE_TOL=""
 OUT=""
 GAINS="$ROOT/gains_g1_legs.txt"
 ASK=1
@@ -72,11 +77,13 @@ while [ $# -gt 0 ]; do
         --duration) DURATION="$2"; shift 2 ;;
         --hold) HOLD="$2"; shift 2 ;;
         --waist-kd-ff) WAIST_KD_FF="$2"; shift 2 ;;
+        --pose) POSE="$2"; shift 2 ;;
+        --pose-tol) POSE_TOL="$2"; shift 2 ;;
         --out) OUT="$2"; shift 2 ;;
         --gains) GAINS="$2"; shift 2 ;;
         --yes) ASK=0; shift ;;
         --dry-run) DRY=1; shift ;;
-        -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,39p' "$0"; exit 0 ;;
         *) echo "未知参数: $1"; exit 2 ;;
     esac
 done
@@ -87,6 +94,12 @@ fi
 if [ ! -f "$GAINS" ]; then
     echo "找不到增益文件 $GAINS"; exit 1
 fi
+POSE_ARGS=()
+if [ -n "$POSE" ]; then
+    [ -f "$POSE" ] || { echo "找不到 --pose 文件 $POSE"; exit 1; }
+    POSE_ARGS=(--pose "$(cd "$(dirname "$POSE")" && pwd)/$(basename "$POSE")")
+    [ -n "$POSE_TOL" ] && POSE_ARGS+=(--pose-tol "$POSE_TOL")
+fi
 if [ "$DRY" -eq 0 ] && [ "$(id -u)" -ne 0 ]; then
     echo "真机运行需要 sudo(或加 --dry-run 只检查参数)"; exit 1
 fi
@@ -95,7 +108,7 @@ mkdir -p "$OUT"
 SUMMARY="$OUT/summary.txt"
 
 if [ "$DRY" -eq 0 ]; then
-    echo "即将依次对 [$LEGS] 腿采集(髋 pitch/roll 两腿镜像), f1=${F1:-按关节表} Hz, amp=${AMP:-按关节表}, duration=$DURATION s, hold=$HOLD, 输出 $OUT"
+    echo "即将依次对 [$LEGS] 腿采集(髋 pitch/roll 两腿镜像), f1=${F1:-按关节表} Hz, amp=${AMP:-按关节表}, duration=$DURATION s, hold=$HOLD, pose=${POSE:-无}, 输出 $OUT"
     if [ "$HOLD" = "body" ]; then
         read -r -p "确认: 头部已刚性固定、两腿与腰活动范围无障碍、急停可触达? 输入 yes 继续: " ans
     else
@@ -119,7 +132,7 @@ run_one() {  # $1 tag, $2 index, $3 amp, $4 center, $5 f1, $6 mode, $7.. extra
     [ -z "$max_err" ] && max_err=$(awk -v a="$amp" 'BEGIN { if (a < 0) a = -a; e = 2 * a + 0.05; printf "%.3f", (e > 0.25 ? e : 0.25) }')
     local cmd=("$PACE" --gains "$GAINS" --joints "$idx" --amp "$amp" --centers "$center"
                --f1 "$f1" --duration "$DURATION" --max-err "$max_err" --hold "$HOLD" --waist-kd-ff "$WAIST_KD_FF"
-               "${mirror[@]}" --out "$OUT" --tag "$tag" "$@" $CONFIRM)
+               "${mirror[@]}" "${POSE_ARGS[@]}" --out "$OUT" --tag "$tag" "$@" $CONFIRM)
     echo "  ${cmd[*]}"
     "${cmd[@]}" 2>&1 | tee "$log"
     local rc=${PIPESTATUS[0]}

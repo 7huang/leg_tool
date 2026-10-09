@@ -225,6 +225,15 @@ sudo scripts/pace_single_joints.sh --hold body --gains gains_g1_legs_stiff_waist
 - 每次运行的 probe 与 release/zero 阶段全身均为零刚度(probe 只有阻尼, 要求所有参与关节静止, 手臂还在摆时会拒绝运行, 等手臂停下再跑): 躯干直立固定时下半身悬垂在腰下方, 处于稳定平衡, 不会坠落, 但会轻微摆动(腰 yaw 无重力恢复)。头部夹具须能承受整机重量与动态载荷, 吊绳建议保留但放松作为备份。
 - 髋 pitch 仍建议 anti(两腿俯仰动量抵消, 腰 pitch 几乎不受激励; 代价是激励腰 yaw)。
 
+### 采集前移到指定姿态(--pose)
+```
+sudo scripts/pace_single_joints.sh --hold body --pose poses/pace_start.txt --only hip_pitch,hip_roll
+```
+- 姿态文件直接粘贴 leg_tool 角度检查(posCheck)的输出, 每行 `ID = <电机 id>, Pos = <电机角, 度>`(含 lf1 零偏), 其余行忽略。程序按 `q = 角度(rad) - lf1_zero_offset_rad` 换到 get_motor_data 坐标, 并联踝/腰用两个电机角正解, 再换成 URDF 坐标; dry-run 时会打印换算结果。poses/pace_start.txt 为 2026-10-09 用户提供的起始姿态(腿与腰接近 0, 两肘弯约 90°)。
+- 阶段: probe -> engage(在 q0 上 PD) -> move_pose(--pose-time, 默认 4 s, 平滑移到指定位置) -> settle(--pose-settle, 默认 1 s) -> move_in -> ... -> move_out(回到指定位置) -> move_home(回到 q0) -> release。被激励关节的中心默认取指定位置, 保持关节保持在指定位置; 文件中没有的关节保持在 q0。
+- settle 结束时检查 |q - 指定位置|, 允许粗略误差(PD 无重力补偿, 软增益手臂有稳态误差), 超过 --pose-tol(默认 0.2 rad)则不采集, 回到 q0 后卸力并记为中止。move_pose/settle/move_home 阶段的跟踪误差中止阈值为 --pose-max-err(默认 0.5 rad), 其余阶段仍为 --max-err; 要求 --pose-tol < --max-err。指定位置与 q0 相差超过 --pose-max-move(默认 1.8 rad)时拒绝运行。
+- meta.json 记录 pose 设置, 每个关节记录 start(起始/保持位置)与 pose_err(settle 结束时的误差); to_pace.py 的 held_not_in_order 取 start, PACE 仿真中保持关节应保持在该位置。
+
 ## 两腿镜像采集(吊装时抵消反作用力)
 躯干吊装(非刚性固定)时, 单腿运动的反作用力会让躯干晃动, 仿真中固定基座无法复现。用 --mirror 只写一条腿的参数, 程序自动生成另一条腿:
 ```
@@ -272,3 +281,4 @@ python3 scripts/to_pace.py build/pace_log/<运行目录> --dt 0.005 --joint-orde
 - 2026-10-08: 训练与采集改用 G1 增益(gains_g1_legs.txt); 新增 urdf/keenon_l1.urdf 与 scripts/urdf_dynamics.py(吊装姿态下的连杆惯量、重力刚度); analyze_ticks.py 新增 --urdf(模型计入重力刚度, 给出 armature 估计); pace_single_joints.sh 按 URDF 模型逐关节设定振幅与 f1, 髋 pitch/roll 改为两腿镜像(anti/sym)。
 - 2026-10-09: pace_chirp 支持 PD 保持并联腰(13/14, 与踝相同的关节空间 PD), 新增 --hold body(两腿与腰全部保持, 用于固定头部采集)与 --waist-kd-ff; ParallelMechanism 增加不依赖全局状态的 motorToJointWaist(motorToJointW 改为调用它, 结果不变); pace_single_joints.sh 新增 --hold / --amp / --max-err / --waist-kd-ff, max-err 按振幅自动设定, 髋 pitch 振幅改为 0.20; 新增 gains_g1_legs_stiff_waist.txt。
 - 2026-10-09: --hold body 扩展到全身(0-28), 两臂也 PD 保持(固定头部时髋 pitch 运动会让无力的手臂甩起来)。
+- 2026-10-09: pace_chirp 新增 --pose(采集前移到 posCheck 格式给出的姿态并 PD 保持, 结束后回到 q0 再卸力)及 --pose-time / --pose-settle / --pose-tol / --pose-max-move / --pose-max-err; 新增阶段 move_pose、settle、move_home; meta.json 增加 pose、start、pose_err; pace_single_joints.sh 新增 --pose / --pose-tol; 新增 poses/pace_start.txt。

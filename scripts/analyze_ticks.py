@@ -25,7 +25,8 @@ import sys
 import numpy as np
 
 NS = 1e-9
-ACTIVE_PHASES = ("engage", "move_in", "hold_pre", "chirp", "hold_post", "move_out", "release")
+ACTIVE_PHASES = ("engage", "move_pose", "settle", "move_in", "hold_pre", "chirp", "hold_post", "move_out", "move_home",
+                 "release")
 JOINT_FIELDS = ("q_des", "kp", "kd", "q", "qd", "tau", "rx_ns", "rx_count", "tx_ns", "tx_count")
 
 

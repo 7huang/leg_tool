@@ -157,7 +157,8 @@ def main():
         "gains": {name: {"kp": joints[name]["kp"], "kd": joints[name]["kd"]} for name in order},
         "initial_pos": {name: float(des[0, c]) for c, name in enumerate(order)},
         # 仿真中必须按同样方式复现的其余关节
-        "held_not_in_order": {j["name"]: {"pos": j["q0"], "kp": j["kp"], "kd": j["kd"]}
+        # 保持位置: --pose 时为指定位置(start), 否则为 q0
+        "held_not_in_order": {j["name"]: {"pos": j.get("start", j["q0"]), "kp": j["kp"], "kd": j["kd"]}
                               for j in meta["joints"] if j["name"] not in in_order},
         "limp_joints": meta["limp_parallel_joints"],
         # --hold body: 全身(两腿、腰、两臂)PD 保持, 采集时头部(torso_link)固定, 仿真中应固定 torso_link 而不是 pelvis

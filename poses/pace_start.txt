@@ -1,0 +1,32 @@
+# PACE 采集起始姿态(2026-10-09, 用户提供), 为 leg_tool 角度检查(posCheck)的输出:
+# 电机原始角, 单位度, 含 lf1 零偏(ec_api_without_ros.hpp 的 lf1_zero_offset_deg)。
+# 用法: pace_chirp --pose poses/pace_start.txt 或 scripts/pace_single_joints.sh --pose poses/pace_start.txt
+ID = 1, Pos = -1.589344
+ID = 2, Pos = -90.664482
+ID = 3, Pos = -1.767587
+ID = 4, Pos = -4.280405
+ID = 5, Pos = -10.167693
+ID = 6, Pos = 8.262238
+ID = 7, Pos = 0.488799
+ID = 8, Pos = 89.990822
+ID = 9, Pos = -1.459339
+ID = 10, Pos = 1.871436
+ID = 11, Pos = 14.579936
+ID = 12, Pos = -14.585204
+ID = 41, Pos = 0.918100
+ID = 42, Pos = 5.499274
+ID = 43, Pos = 1.665487
+ID = 23, Pos = 165.368317
+ID = 24, Pos = -17.228273
+ID = 25, Pos = -3.055769
+ID = 26, Pos = 123.603264
+ID = 27, Pos = 0.955355
+ID = 28, Pos = 10.328091
+ID = 29, Pos = -11.419909
+ID = 16, Pos = -163.087006
+ID = 17, Pos = 12.143422
+ID = 18, Pos = 1.849533
+ID = 19, Pos = -122.488930
+ID = 20, Pos = -5.634368
+ID = 21, Pos = -4.838584
+ID = 22, Pos = -7.030016

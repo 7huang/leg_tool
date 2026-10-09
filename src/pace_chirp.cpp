@@ -99,9 +99,11 @@ const int kMirrorGeomSign[6] = {1, -1, -1, 1, 1, -1};
 // pitch 类关节: anti 模式下对侧反相
 const bool kMirrorPitchLike[6] = {true, false, false, true, true, false};
 
-enum Phase : int { PROBE = 0, ENGAGE, MOVE_IN, HOLD_PRE, CHIRP, HOLD_POST, MOVE_OUT, RELEASE, DAMP, ZERO, DONE };
-const char *kPhaseName[] = {"probe", "engage", "move_in", "hold_pre", "chirp", "hold_post",
-                            "move_out", "release", "damp", "zero", "done"};
+// move_pose / settle / move_home 只在 --pose 时出现; 安全检查覆盖 ENGAGE..RELEASE, 顺序不能乱
+enum Phase : int { PROBE = 0, ENGAGE, MOVE_POSE, SETTLE, MOVE_IN, HOLD_PRE, CHIRP, HOLD_POST, MOVE_OUT, MOVE_HOME,
+                   RELEASE, DAMP, ZERO, DONE };
+const char *kPhaseName[] = {"probe", "engage", "move_pose", "settle", "move_in", "hold_pre", "chirp", "hold_post",
+                            "move_out", "move_home", "release", "damp", "zero", "done"};
 
 constexpr double kProbeMinS = 0.5;         // 探测阶段最短时长 [s]
 constexpr double kProbeMaxS = 3.0;         // 探测阶段超时 [s]
@@ -179,6 +181,12 @@ struct Options {
     double hold_post = 1.0;
     double move_time = 2.0;
     double max_move = 0.5;
+    std::string pose_path;        // 为空时不做 move_pose, 起始位置即 q0
+    double pose_time = 4.0;
+    double pose_settle = 1.0;
+    double pose_tol = 0.2;
+    double pose_max_move = 1.8;   // 肘在起始姿态弯 90°(1.57 rad), 自然下垂时接近伸直
+    double pose_max_err = 0.5;    // move_pose/settle/move_home 的跟踪误差中止阈值(软增益手臂大幅移动有滞后与重力误差)
     int rate = 1000;
     double max_vel = 5.0;
     double max_tau = 30.0;
@@ -207,6 +215,10 @@ struct Joint {
     int vel_bad = 0;
     int tau_bad = 0;
     double last_q_des = 0.0;
+    bool has_pose = false;
+    double pose = NAN;      // --pose 指定的位置(URDF 坐标)
+    double start = NAN;     // 采集起始位置: 有 pose 时为 pose, 否则为 q0; 保持关节始终保持在这里
+    double pose_err = NAN;  // settle 结束时 q - start
 };
 
 struct TickRec {
@@ -264,7 +276,17 @@ void print_usage(const char *prog){
            "  --hold-pre X       chirp 前保持 [s], 默认 1.0\n"
            "  --hold-post X      chirp 后保持 [s], 默认 1.0\n"
            "  --move-time X      q0 与中心位置之间移动的时长 [s], 默认 2.0\n"
-           "  --max-move X       中心位置与 q0 的最大距离 [rad], 默认 0.5\n"
+           "  --max-move X       中心位置与起始位置的最大距离 [rad], 默认 0.5\n"
+           "  --pose FILE        采集前先把参与关节移到指定位置: 文件为 leg_tool 角度检查(posCheck)的输出,\n"
+           "                     每行 \"ID = <电机 id>, Pos = <电机角, 度, 含零偏>\", 其余行忽略; 并联踝/腰由两个电机角正解。\n"
+           "                     文件中没有的参与关节保持在 q0。阶段: engage -> move_pose -> settle -> move_in ...\n"
+           "                     move_out -> move_home(回到 q0) -> release; 被激励关节的中心默认取该位置\n"
+           "  --pose-time X      q0 与指定位置之间移动的时长 [s], 默认 4\n"
+           "  --pose-settle X    到达后保持时长 [s], 默认 1; 结束时检查 |q - 指定位置|\n"
+           "  --pose-tol X       settle 结束时允许的最大误差 [rad], 默认 0.2, 超过则中止\n"
+           "  --pose-max-move X  指定位置与 q0 的最大距离 [rad], 默认 1.8(防止姿态文件写错导致大幅运动)\n"
+           "  --pose-max-err X   move_pose/settle/move_home 阶段的跟踪误差中止阈值 [rad], 默认 0.5\n"
+           "                     (其余阶段用 --max-err; 要求 --pose-tol < --max-err)\n"
            "  --rate N           控制/记录频率 [Hz], 默认 1000, 范围 100-1000\n"
            "  --max-vel X        速度安全阈值 [rad/s], 默认 5\n"
            "  --max-tau X        力矩安全阈值 [Nm], 默认 30\n"
@@ -347,6 +369,12 @@ bool parse_args(int argc, char **argv, Options &o){
         else if (key == "--hold-post")  o.hold_post = strtod(v, nullptr);
         else if (key == "--move-time")  o.move_time = strtod(v, nullptr);
         else if (key == "--max-move")   o.max_move = strtod(v, nullptr);
+        else if (key == "--pose")       o.pose_path = v;
+        else if (key == "--pose-time")  o.pose_time = strtod(v, nullptr);
+        else if (key == "--pose-settle") o.pose_settle = strtod(v, nullptr);
+        else if (key == "--pose-tol")   o.pose_tol = strtod(v, nullptr);
+        else if (key == "--pose-max-move") o.pose_max_move = strtod(v, nullptr);
+        else if (key == "--pose-max-err") o.pose_max_err = strtod(v, nullptr);
         else if (key == "--rate")       o.rate = atoi(v);
         else if (key == "--max-vel")    o.max_vel = strtod(v, nullptr);
         else if (key == "--max-tau")    o.max_tau = strtod(v, nullptr);
@@ -458,6 +486,13 @@ bool build_joints(const Options &o, std::vector<Joint> &joints){
     if (!(o.hold_pre >= 0 && o.hold_pre <= 10 && o.hold_post >= 0 && o.hold_post <= 10)) return fail("--hold-pre/--hold-post 必须在 [0, 10] s");
     if (!(o.move_time >= 0.5 && o.move_time <= 10)) return fail("--move-time 必须在 [0.5, 10] s");
     if (!(o.max_move > 0 && o.max_move <= 1.0)) return fail("--max-move 必须在 (0, 1.0] rad");
+    if (!(o.pose_time >= 1 && o.pose_time <= 20)) return fail("--pose-time 必须在 [1, 20] s");
+    if (!(o.pose_settle >= 0.2 && o.pose_settle <= 10)) return fail("--pose-settle 必须在 [0.2, 10] s");
+    if (!(o.pose_tol > 0 && o.pose_tol <= 1.0)) return fail("--pose-tol 必须在 (0, 1.0] rad");
+    if (!(o.pose_max_move > 0 && o.pose_max_move <= 3.0)) return fail("--pose-max-move 必须在 (0, 3.0] rad");
+    if (!(o.pose_max_err > 0 && o.pose_max_err <= 1.5)) return fail("--pose-max-err 必须在 (0, 1.5] rad");
+    // settle 通过后误差可接近 pose_tol, 进入 move_in 后按 --max-err 检查, 两者须留余量
+    if (!o.pose_path.empty() && o.pose_tol >= o.max_err) return fail("--pose-tol 必须小于 --max-err");
     if (o.rate < 100 || o.rate > 1000) return fail("--rate 必须在 [100, 1000] Hz");
     if (!(o.max_vel > 0 && o.max_tau > 0 && o.max_err > 0 && o.stale_ms >= 10)) return fail("安全阈值必须为正, --stale-ms >= 10");
     if (!(o.ankle_kd_ff >= 0 && o.ankle_kd_ff <= 5)) return fail("--ankle-kd-ff 必须在 [0, 5]");
@@ -672,6 +707,84 @@ struct ParallelSolver {
     }
 };
 
+// 电机 id -> 关节下标, 与 math_ops.c 的 fd_id_2_index 相同(无效 id 返回 -1, 不打印)
+int motor_id_to_index(int id){
+    if (id >= 1 && id <= 12) return id - 1;
+    if (id >= 16 && id <= 22) return id + 6;
+    if (id >= 23 && id <= 29) return id - 8;
+    if (id >= 41 && id <= 43) return id - 29;
+    return -1;
+}
+
+// --pose: 读取 posCheck 输出(电机角, 度, 含 lf1 零偏), 换算成各参与关节的 URDF 位置。
+// 电机角 -> get_motor_data 同坐标: q = 角度(rad) - lf1_zero_offset_rad; 并联踝/腰再用与采集相同的正解得到关节角。
+bool apply_pose(const Options &o, std::vector<Joint> &joints){
+    FILE *f = fopen(o.pose_path.c_str(), "r");
+    if (f == nullptr){
+        fprintf(stderr, "无法打开 --pose 文件 %s\n", o.pose_path.c_str());
+        return false;
+    }
+    bool has[kN] = {false};
+    PaceJointSample motor[kN] = {};
+    char line[512];
+    int n_lines = 0;
+    while (fgets(line, sizeof(line), f) != nullptr){
+        int id = 0;
+        double deg = 0.0;
+        if (sscanf(line, " ID = %d , Pos = %lf", &id, &deg) != 2) continue;
+        const int i = motor_id_to_index(id);
+        if (i < 0){
+            fprintf(stderr, "--pose 文件中电机 id %d 无效\n", id);
+            fclose(f);
+            return false;
+        }
+        if (has[i]){
+            fprintf(stderr, "--pose 文件中电机 id %d 重复\n", id);
+            fclose(f);
+            return false;
+        }
+        has[i] = true;
+        motor[i].q = (float)(deg * M_PI / 180.0 - lf1_zero_offset_rad[i]);
+        n_lines += 1;
+    }
+    fclose(f);
+    if (n_lines == 0){
+        fprintf(stderr, "--pose 文件 %s 中没有 \"ID = <id>, Pos = <角度>\" 行\n", o.pose_path.c_str());
+        return false;
+    }
+
+    double q_api[kN];
+    bool ok[kN] = {false};
+    for (int i = 0; i < kN; ++i){
+        const int g = par_group(i);
+        if (g < 0){
+            q_api[i] = motor[i].q;
+            ok[i] = has[i];
+        }
+        else if (i == kParIndex[g][0] && has[kParIndex[g][0]] && has[kParIndex[g][1]]){
+            ParallelSolver solver;
+            PaceJointSample out[2];
+            solver.solve(g, motor, out);
+            q_api[kParIndex[g][0]] = out[0].q;
+            q_api[kParIndex[g][1]] = out[1].q;
+            ok[kParIndex[g][0]] = ok[kParIndex[g][1]] = std::isfinite(out[0].q) && std::isfinite(out[1].q);
+        }
+    }
+    printf("[PACE] --pose %s: 共 %d 个电机\n", o.pose_path.c_str(), n_lines);
+    for (Joint &J : joints){
+        const int i = J.index;
+        if (!ok[i]){
+            printf("[PACE]   %-28s 文件中没有(并联关节需两个电机都有), 保持在 q0\n", kJointNames[i]);
+            continue;
+        }
+        J.has_pose = true;
+        J.pose = api_to_urdf(i, q_api[i]);
+        printf("[PACE]   %-28s 电机 id %2d  ->  pose %+8.4f rad (%+7.2f deg, URDF)\n", kJointNames[i], fd_index_2_id(i),
+               J.pose, J.pose * 180.0 / M_PI);
+    }
+    return true;
+}
+
 void print_plan(const Options &o, const std::vector<Joint> &joints){
     printf("[PACE] chirp %.2f->%.2f Hz / %.1f s, rate=%d Hz, move_time=%.1f s\n", o.f0, o.f1, o.duration, o.rate, o.move_time);
     printf("[PACE] %-4s %-28s %-7s %8s %8s %8s %8s\n", "idx", "name", "role", "kp", "kd", "amp", "center");
@@ -778,6 +891,9 @@ int main(int argc, char **argv){
     std::vector<Joint> joints;
     if (!expand_mirror(o)) return 2;
     if (!build_joints(o, joints)) return 2;
+    if (!o.pose_path.empty() && !apply_pose(o, joints)) return 2;
+    bool use_pose = false;
+    for (const Joint &J : joints) use_pose = use_pose || J.has_pose;
     const size_t nj = joints.size();
     print_plan(o, joints);
 
@@ -794,6 +910,7 @@ int main(int argc, char **argv){
 
     // 预分配并触页, 控制循环内不再分配内存
     const double total_s = kProbeMaxS + kEngageS + 2 * o.move_time + o.hold_pre + o.duration + o.hold_post
+                         + (use_pose ? 2 * o.pose_time + o.pose_settle : 0.0)
                          + kReleaseS + kDampS + kZeroS + 1.0;
     const size_t max_ticks = (size_t)(total_s * o.rate) + 16;
     std::vector<TickRec> ticks(max_ticks);
@@ -849,6 +966,7 @@ int main(int argc, char **argv){
     int64_t next = t0;
     int64_t phase_start = t0;
     char abort_reason[256] = "";
+    char pose_fail[256] = "";  // settle 未到达: 不采集但正常回到 q0 卸力, 结束后记为中止
     bool have_rx_count = false;
     uint32_t overruns = 0;
 
@@ -890,6 +1008,8 @@ int main(int argc, char **argv){
             if (g_stop){
                 snprintf(abort_reason, sizeof(abort_reason), "收到 SIGINT/SIGTERM");
             }
+            const bool posing = phase == MOVE_POSE || phase == SETTLE || phase == MOVE_HOME;
+            const double err_limit = posing ? std::max(o.max_err, o.pose_max_err) : o.max_err;
             for (size_t k = 0; k < nj && abort_reason[0] == '\0'; ++k){
                 Joint &J = joints[k];
                 const char *name = kJointNames[J.index];
@@ -902,9 +1022,9 @@ int main(int argc, char **argv){
                 else if (fb[k].error != 0){
                     snprintf(abort_reason, sizeof(abort_reason), "%s 电机报错 error=0x%02X", name, fb[k].error);
                 }
-                else if (std::fabs(q[k] - J.last_q_des) > o.max_err){
+                else if (std::fabs(q[k] - J.last_q_des) > err_limit){
                     snprintf(abort_reason, sizeof(abort_reason), "%s 跟踪误差 %.4f rad 超过 %.3f", name,
-                             q[k] - J.last_q_des, o.max_err);
+                             q[k] - J.last_q_des, err_limit);
                 }
                 else if (fresh[k]){
                     J.vel_bad = std::fabs(qd[k]) > o.max_vel ? J.vel_bad + 1 : 0;
@@ -947,14 +1067,19 @@ int main(int argc, char **argv){
                     for (size_t k = 0; k < nj && abort_reason[0] == '\0'; ++k){
                         Joint &J = joints[k];
                         J.q0 = J.probe_sum / J.probe_n;
-                        if (std::isnan(J.center)) J.center = J.q0;
+                        J.start = J.has_pose ? J.pose : J.q0;
+                        if (std::isnan(J.center)) J.center = J.start;
                         if (J.probe_max - J.probe_min > kProbeMaxSpread){
                             snprintf(abort_reason, sizeof(abort_reason), "probe 期间 %s 在动(极差 %.4f rad)",
                                      kJointNames[J.index], J.probe_max - J.probe_min);
                         }
-                        else if (std::fabs(J.center - J.q0) > o.max_move){
-                            snprintf(abort_reason, sizeof(abort_reason), "%s 中心位置 %.4f 距 q0=%.4f 超过 --max-move %.3f",
-                                     kJointNames[J.index], J.center, J.q0, o.max_move);
+                        else if (std::fabs(J.start - J.q0) > o.pose_max_move){
+                            snprintf(abort_reason, sizeof(abort_reason), "%s 指定位置 %.4f 距 q0=%.4f 超过 --pose-max-move %.3f",
+                                     kJointNames[J.index], J.start, J.q0, o.pose_max_move);
+                        }
+                        else if (std::fabs(J.center - J.start) > o.max_move){
+                            snprintf(abort_reason, sizeof(abort_reason), "%s 中心位置 %.4f 距起始位置 %.4f 超过 --max-move %.3f",
+                                     kJointNames[J.index], J.center, J.start, o.max_move);
                         }
                     }
                     if (abort_reason[0] != '\0'){
@@ -963,8 +1088,8 @@ int main(int argc, char **argv){
                     }
                     else {
                         for (const Joint &J : joints){
-                            printf("[PACE] %-28s q0 = %8.5f  center = %8.5f (%u 帧)\n", kJointNames[J.index], J.q0,
-                                   J.excited ? J.center : J.q0, J.probe_n);
+                            printf("[PACE] %-28s q0 = %8.5f  start = %8.5f  center = %8.5f (%u 帧)\n", kJointNames[J.index],
+                                   J.q0, J.start, J.excited ? J.center : J.start, J.probe_n);
                         }
                         enter(ENGAGE, t_tick);
                     }
@@ -982,12 +1107,44 @@ int main(int argc, char **argv){
                 }
                 break;
             }
-            case ENGAGE:    if (tp >= kEngageS) enter(MOVE_IN, t_tick); break;
+            case ENGAGE:    if (tp >= kEngageS) enter(use_pose ? MOVE_POSE : MOVE_IN, t_tick); break;
+            case MOVE_POSE: if (tp >= o.pose_time) enter(SETTLE, t_tick); break;
+            case SETTLE: {
+                if (tp < o.pose_settle) break;
+                // 到达检查: 允许粗略误差(PD 无重力补偿, 存在稳态误差), 超过 --pose-tol 才中止
+                double worst = 0.0;
+                int worst_k = 0;
+                for (size_t k = 0; k < nj; ++k){
+                    Joint &J = joints[k];
+                    J.pose_err = q[k] - J.start;
+                    if (std::fabs(J.pose_err) > worst){
+                        worst = std::fabs(J.pose_err);
+                        worst_k = (int)k;
+                    }
+                    if (std::fabs(J.pose_err) > 0.5 * o.pose_tol){
+                        printf("[PACE] settle: %-28s q = %8.4f  目标 %8.4f  误差 %+.4f rad\n", kJointNames[J.index], q[k],
+                               J.start, J.pose_err);
+                    }
+                }
+                printf("[PACE] settle: 最大误差 %.4f rad (%s), 允许 %.3f\n", worst, kJointNames[joints[worst_k].index], o.pose_tol);
+                if (worst > o.pose_tol){
+                    // 不是紧急情况: 不采集, 平滑回到 q0 再卸力(安全检查照常进行), 结束后按中止记录
+                    snprintf(pose_fail, sizeof(pose_fail), "%s 未到达指定位置: 误差 %.4f rad 超过 --pose-tol %.3f",
+                             kJointNames[joints[worst_k].index], worst, o.pose_tol);
+                    printf("[PACE] 中止采集: %s, 回到 q0 后卸力\n", pose_fail);
+                    enter(MOVE_HOME, t_tick);
+                }
+                else {
+                    enter(MOVE_IN, t_tick);
+                }
+                break;
+            }
             case MOVE_IN:   if (tp >= o.move_time) enter(HOLD_PRE, t_tick); break;
             case HOLD_PRE:  if (tp >= o.hold_pre) enter(CHIRP, t_tick); break;
             case CHIRP:     if (tp >= o.duration) enter(HOLD_POST, t_tick); break;
             case HOLD_POST: if (tp >= o.hold_post) enter(MOVE_OUT, t_tick); break;
-            case MOVE_OUT:  if (tp >= o.move_time) enter(RELEASE, t_tick); break;
+            case MOVE_OUT:  if (tp >= o.move_time) enter(use_pose ? MOVE_HOME : RELEASE, t_tick); break;
+            case MOVE_HOME: if (tp >= o.pose_time) enter(RELEASE, t_tick); break;
             case RELEASE:   if (tp >= kReleaseS) enter(ZERO, t_tick); break;
             case DAMP:      if (tp >= kDampS) enter(ZERO, t_tick); break;
             case ZERO:      if (tp >= kZeroS) enter(DONE, t_tick); break;
@@ -1000,16 +1157,19 @@ int main(int argc, char **argv){
         TickRec &tr = ticks[n_ticks];
         for (size_t k = 0; k < nj; ++k){
             Joint &J = joints[k];
-            const double center = J.excited ? J.center : J.q0;
+            const double center = J.excited ? J.center : J.start;
             double q_des = q[k], kp = 0.0, kd = 0.0;
             switch (phase){
                 case PROBE:     kd = J.kd; break;  // 零刚度 + 阻尼: 只读位置, 防止关节意外下落过快
                 case ENGAGE:    q_des = J.q0; kp = J.kp * smooth01(tp / kEngageS); kd = J.kd; break;
-                case MOVE_IN:   q_des = J.q0 + (center - J.q0) * smooth01(tp / o.move_time); kp = J.kp; kd = J.kd; break;
+                case MOVE_POSE: q_des = J.q0 + (J.start - J.q0) * smooth01(tp / o.pose_time); kp = J.kp; kd = J.kd; break;
+                case SETTLE:    q_des = J.start; kp = J.kp; kd = J.kd; break;
+                case MOVE_IN:   q_des = J.start + (center - J.start) * smooth01(tp / o.move_time); kp = J.kp; kd = J.kd; break;
                 case HOLD_PRE:
                 case HOLD_POST: q_des = center; kp = J.kp; kd = J.kd; break;
                 case CHIRP:     q_des = center + (J.excited ? J.amp * u : 0.0); kp = J.kp; kd = J.kd; break;
-                case MOVE_OUT:  q_des = center + (J.q0 - center) * smooth01(tp / o.move_time); kp = J.kp; kd = J.kd; break;
+                case MOVE_OUT:  q_des = center + (J.start - center) * smooth01(tp / o.move_time); kp = J.kp; kd = J.kd; break;
+                case MOVE_HOME: q_des = J.start + (J.q0 - J.start) * smooth01(tp / o.pose_time); kp = J.kp; kd = J.kd; break;
                 case RELEASE:   q_des = J.q0; kp = J.kp * (1 - smooth01(tp / kReleaseS)); kd = J.kd; break;
                 case DAMP:      kd = J.kd; break;  // 纯阻尼, 不注入能量
                 case ZERO:
@@ -1077,6 +1237,7 @@ int main(int argc, char **argv){
     cmd.kd_ff[1] = 0.0f;
     sendMotorCmd(&cmd);
     usleep(20 * 1000);
+    if (abort_reason[0] == '\0' && pose_fail[0] != '\0') snprintf(abort_reason, sizeof(abort_reason), "%s", pose_fail);
 
     // ---------- 逐关节统计(chirp 段) ----------
     std::vector<uint32_t> frames(nj, 0);
@@ -1116,17 +1277,34 @@ int main(int argc, char **argv){
         fprintf(mf, "  \"gains_file\": \"%s\",\n", json_escape(o.gains_path).c_str());
         fprintf(mf, "  \"mirror\": \"%s\",\n", o.mirror.c_str());
         fprintf(mf, "  \"hold\": \"%s\",\n", json_escape(o.hold).c_str());
+        if (use_pose){
+            fprintf(mf, "  \"pose\": {\"file\": \"%s\", \"time\": %.3f, \"settle\": %.3f, \"tol\": %.3f, \"max_err\": %.3f},\n",
+                    json_escape(o.pose_path).c_str(), o.pose_time, o.pose_settle, o.pose_tol, o.pose_max_err);
+        }
+        else {
+            fprintf(mf, "  \"pose\": null,\n");
+        }
+        // 未到达对应阶段(中止)时 start/pose_err 为 NaN, 写成 null 保证 JSON 合法
+        auto num = [](double v){
+            char buf[32];
+            if (std::isfinite(v)) snprintf(buf, sizeof(buf), "%.6f", v);
+            else snprintf(buf, sizeof(buf), "null");
+            return std::string(buf);
+        };
         fprintf(mf, "  \"joints\": [\n");
         for (size_t k = 0; k < nj; ++k){
             const Joint &J = joints[k];
             const int i = J.index;
+            // center: 被激励关节的 chirp 中心, 保持关节的保持位置(= start); start: move_pose 后的起始位置(无 --pose 时为 q0)
             fprintf(mf, "    {\"index\": %d, \"name\": \"%s\", \"motor_id\": %d, \"parallel\": %s, \"limb\": \"%s\", \"role\": \"%s\", "
-                        "\"kp\": %.6g, \"kd\": %.6g, \"amp\": %.6g, \"center\": %.6f, \"q0\": %.6f, "
+                        "\"kp\": %.6g, \"kd\": %.6g, \"amp\": %.6g, \"center\": %s, \"q0\": %.6f, \"start\": %s, "
+                        "\"pose\": %s, \"pose_err\": %s, "
                         "\"motor_direction\": %d, \"dance_dir\": %d, \"pos_offset\": %.4f, \"lf1_zero_offset_rad\": %.6f, "
                         "\"chirp_feedback_frames\": %u, \"chirp_feedback_hz\": %.2f, \"max_rx_gap_ms\": %.3f, \"max_track_err\": %.5f}%s\n",
                     i, kJointNames[i], fd_index_2_id(i), par_group(i) >= 0 ? "true" : "false", kLimbName[limb_of(i)],
                     J.excited ? "excite" : "hold",
-                    J.kp, J.kd, J.excited ? J.amp : 0.0, J.excited ? J.center : J.q0, J.q0,
+                    J.kp, J.kd, J.excited ? J.amp : 0.0, num(J.excited ? J.center : J.start).c_str(), J.q0,
+                    num(J.start).c_str(), num(J.pose).c_str(), num(J.pose_err).c_str(),
                     kMotorDirection[i], kDanceDir[i], kPosOffset[i], lf1_zero_offset_rad[i],
                     frames[k], fb_hz[k], max_gap_ms[k], max_track[k], k + 1 < nj ? "," : "");
         }

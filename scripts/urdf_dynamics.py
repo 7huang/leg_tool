@@ -138,7 +138,8 @@ def main():
     q = {}
     if args.pose:
         meta = json.load(open(args.pose, encoding="utf-8"))
-        q = {j["name"]: j["q0"] for j in meta["joints"]}
+        # 采集时的姿态: 中心/保持位置(--pose 时为指定位置); 旧数据或中止时没有 center 则用 q0
+        q = {j["name"]: j["center"] if j.get("center") is not None else j["q0"] for j in meta["joints"]}
     names = args.joints.split(",") if args.joints else [n for n in robot.joints if "hip" in n or "knee" in n or "ankle" in n]
     print(f"{'joint':26}{'q':>8}{'子树质量':>9}{'I_link':>9}{'k_g':>8}{'tau_g':>8}{'限位':>16}")
     for n in names:
